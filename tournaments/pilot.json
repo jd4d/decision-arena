@@ -1,0 +1,10 @@
+{
+  "runId": "dev-pilot",
+  "agents": ["jev", "msd1"],
+  "maps": ["open", "pillars", "crossfire"],
+  "seeds": [101, 102],
+  "conditions": ["scaled:1"],
+  "budgetUsd": 0.3,
+  "concurrency": 6,
+  "estMatchCostUsd": 0.012
+}

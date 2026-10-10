@@ -1,0 +1,8 @@
+node_modules/
+dist/
+runs/
+public/data/
+.DS_Store
+.env*
+.dev.vars
+.wrangler/
