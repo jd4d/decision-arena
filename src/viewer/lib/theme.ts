@@ -63,5 +63,10 @@ export function shortLabel(id: string, label: string): string {
   return label.replace(/\bbot\b/i, "").replace(/[()]/g, "").replace(/\s+ms\b/, "ms").replace(/\s+/g, " ").trim().toUpperCase();
 }
 
-/** Runs produced from dev/pilot logs (same rule as the analysis exporter). */
-export const isDevRun = (runId: string) => /^(dev-|adhoc-)/.test(runId);
+const CANONICAL = ["jev", "msd1"];
+const rank = (id: string) => (CANONICAL.indexOf(id) + 1 || CANONICAL.length + 1);
+
+/** Lineup in a stable display order (Jev, then Microsoft, then anything else), whatever order a summary lists it in. */
+export function canonicalOrder<T extends { id: string }>(xs: readonly T[]): T[] {
+  return [...xs].sort((a, b) => rank(a.id) - rank(b.id));
+}

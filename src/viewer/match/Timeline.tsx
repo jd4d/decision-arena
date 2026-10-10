@@ -4,7 +4,7 @@ import { SPEEDS, usePlayer, type Player } from "../replay/player.ts";
 import { clock } from "../lib/format.ts";
 import { rgba, type TeamColor } from "../lib/theme.ts";
 
-type Props = { model: MatchModel; player: Player; colors: [TeamColor, TeamColor] };
+type Props = { model: MatchModel; player: Player; colors: [TeamColor, TeamColor]; live?: boolean };
 
 const KEY_MARKERS = new Set(["hit", "self", "clash", "end", "fizzle"]);
 const JUMP_KINDS = new Set(["hit", "self", "clash", "end"]);
@@ -17,7 +17,7 @@ export function jumpTarget(model: MatchModel, tick: number, dir: 1 | -1): number
   return prev.length ? prev[prev.length - 1] : null;
 }
 
-export function Timeline({ model, player, colors }: Props) {
+export function Timeline({ model, player, colors, live = false }: Props) {
   const snap = usePlayer(player);
   const trackRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLDivElement>(null);
@@ -27,7 +27,9 @@ export function Timeline({ model, player, colors }: Props) {
   const drag = useRef<{ wasPlaying: boolean } | null>(null);
   const [hover, setHover] = useState<{ x: number; tick: number; marker: Marker | null } | null>(null);
   const [help, setHelp] = useState(false);
-  const end = Math.max(1, model.endTick);
+  // Live: the track spans the whole round and fills like a video buffer as the stream arrives.
+  const end = live ? Math.max(1, model.header.roundTicks, snap.end) : Math.max(1, model.endTick);
+  const avail = snap.end;
   const hz = model.header.tickHz;
 
   // Playhead follows the fractional clock every frame without React renders.
@@ -83,7 +85,7 @@ export function Timeline({ model, player, colors }: Props) {
     const ro = new ResizeObserver(draw);
     ro.observe(cv);
     return () => ro.disconnect();
-  }, [model, colors, end]);
+  }, [model, colors, end, avail]);
 
   const tickAt = (clientX: number) => {
     const r = trackRef.current!.getBoundingClientRect();
@@ -146,13 +148,25 @@ export function Timeline({ model, player, colors }: Props) {
           <span className="timeline__tick">tick {snap.tick}</span>
         </div>
         <div className="timeline__right">
-          <div className="seg" role="radiogroup" aria-label="Playback speed">
-            {SPEEDS.map((s) => (
-              <button key={s} role="radio" aria-checked={snap.speed === s} className={snap.speed === s ? "is-on" : ""} onClick={() => player.setSpeed(s)}>
-                {s}×
+          {snap.live ? (
+            snap.behind ? (
+              <button className="golive" onClick={() => player.goLive()} title="Jump to the live edge (End)">
+                <span className="golive__dot" /> Go live
               </button>
-            ))}
-          </div>
+            ) : (
+              <span className="golive is-live" title="Playing just behind the live stream">
+                <span className="golive__dot" /> Live
+              </span>
+            )
+          ) : (
+            <div className="seg" role="radiogroup" aria-label="Playback speed">
+              {SPEEDS.map((s) => (
+                <button key={s} role="radio" aria-checked={snap.speed === s} className={snap.speed === s ? "is-on" : ""} onClick={() => player.setSpeed(s)}>
+                  {s}×
+                </button>
+              ))}
+            </div>
+          )}
           <Toggle on={snap.slowmo} onClick={() => player.setSlowmo(!snap.slowmo)} label="Auto slow-mo" hint="S" />
           <Toggle on={snap.ghosts} onClick={() => player.setGhosts(!snap.ghosts)} label="Ghosts" hint="G" />
           <div className="help">
@@ -165,7 +179,7 @@ export function Timeline({ model, player, colors }: Props) {
                   <dt>← →</dt><dd>Seek 1 s (Shift: 5 s)</dd>
                   <dt>, .</dt><dd>Step one tick</dd>
                   <dt>[ ]</dt><dd>Previous / next event</dd>
-                  <dt>↑ ↓</dt><dd>Faster / slower</dd>
+                  {live ? <><dt>End</dt><dd>Jump to live</dd></> : <><dt>↑ ↓</dt><dd>Faster / slower</dd></>}
                   <dt>S · G</dt><dd>Slow-mo · ghosts</dd>
                   <dt>Home End</dt><dd>Start / end</dd>
                 </dl>
@@ -192,6 +206,7 @@ export function Timeline({ model, player, colors }: Props) {
           ))}
         </div>
         <div className="track__wave">
+          {live && <div className="track__buffer" style={{ width: `${(Math.min(avail, end) / end) * 100}%` }} />}
           <canvas ref={waveRef} />
           <div className="track__fill" ref={fillRef} />
           <span className="track__lane track__lane--a" style={{ color: colors[0].main }}>latency</span>

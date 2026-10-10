@@ -1,6 +1,7 @@
 // Match model for the viewer: one forward re-simulation of the log via createReplay(), cached per tick.
 // The per-tick cache is the "keyframe cache": seeking, ghosts (past enemy positions), trails and effects all
-// read from it in O(1), and a full 60 s match re-simulates in a few milliseconds.
+// read from it in O(1), and a full 60 s match re-simulates in a few milliseconds. Live matches use the same
+// builder incrementally: the model's arrays grow in place as stream batches arrive.
 import { createReplay, type Replay } from "../../runner/replay.ts";
 import type { DecisionRec, HeaderRec, LogRec, ResultRec } from "../../runner/log.ts";
 import { wrapAngle, type Rect } from "../../sim/math.ts";
@@ -26,12 +27,22 @@ export type HitEvent = Extract<SimEvent, { type: "hit" }>;
 export type MarkerKind = "hit" | "self" | "clash" | "end" | "fizzle" | "fire";
 export type Marker = { tick: number; kind: MarkerKind; slot: 0 | 1 | null; label: string };
 
+/** Pending decision per slot as reported by a live stream: only its issue tick is known until it lands. */
+export type Inflight = [{ issueTick: number } | null, { issueTick: number } | null];
+
+export type LiveInfo = {
+  /** Pending decisions at the stream edge (`MatchModel.endTick`). */
+  inflight: Inflight;
+  /** The stream has ended: frames run to the final tick and `result` is set. */
+  complete: boolean;
+};
+
 export type MatchModel = {
   header: HeaderRec;
   result: ResultRec | undefined;
   walls: Rect[];
   frames: Frame[];
-  /** Last simulated tick (frames.length - 1). */
+  /** Last simulated tick (frames.length - 1). Grows while a live match streams. */
   endTick: number;
   decisions: [DecisionRec[], DecisionRec[]];
   markers: Marker[];
@@ -42,6 +53,8 @@ export type MatchModel = {
   /** The log was recorded with a different sim version than the one bundled in this viewer. */
   simVersion: { log: string; viewer: string; stale: boolean };
   endEvent: Extract<SimEvent, { type: "end" }> | null;
+  /** Set while the model is being built from a live stream. */
+  live: LiveInfo | null;
 };
 
 const TREAD_HALF = 0.55;
@@ -67,57 +80,109 @@ function snap(w: World, prev: Frame | undefined): Frame {
   };
 }
 
-export function buildModel(records: LogRec[]): MatchModel {
-  const rp = createReplay(records); // throws on unknown maps / missing header
-  const stopAt = rp.result ? rp.result.ticks : Infinity;
-  const frames: Frame[] = [snap(rp.world, undefined)];
-  while (!rp.world.over && rp.world.tick < stopAt && frames.length < 200_000) {
-    rp.advance();
-    frames.push(snap(rp.world, frames[frames.length - 1]));
+/**
+ * Incremental re-simulation. A finished log is fed in one go; a live stream feeds records batch by batch and
+ * advances to the tick the engine has confirmed. Decisions and checks are de-duplicated, so a reconnect that
+ * resends the whole backlog is harmless.
+ */
+export class ModelBuilder {
+  readonly model: MatchModel;
+  private readonly rp: Replay;
+  private readonly seen = new Set<string>();
+  private readonly labels: string[];
+
+  constructor(header: HeaderRec, live: boolean) {
+    this.rp = createReplay([header]); // throws on unknown maps
+    this.labels = header.agents.map((a) => a.label);
+    this.model = {
+      header,
+      result: undefined,
+      walls: this.rp.world.walls,
+      frames: [snap(this.rp.world, undefined)],
+      endTick: 0,
+      decisions: [[], []],
+      markers: [],
+      hits: [],
+      slowTicks: [],
+      mismatches: this.rp.mismatches,
+      simVersion: { log: header.sim, viewer: SIM_VERSION, stale: header.sim !== SIM_VERSION },
+      endEvent: null,
+      live: live ? { inflight: [null, null], complete: false } : null,
+    };
   }
 
-  const decisions: [DecisionRec[], DecisionRec[]] = [[], []];
-  for (const d of rp.decisions) decisions[d.slot].push(d);
-  for (const list of decisions) list.sort((a, b) => a.issueTick - b.issueTick || a.n - b.n);
+  /** Add records (any order within a batch; decisions must arrive before the tick they apply at is simulated). */
+  add(recs: LogRec[]): void {
+    for (const r of recs) {
+      if (r.k === "decision") {
+        const key = `${r.slot}:${r.n}`;
+        if (this.seen.has(key)) continue;
+        this.seen.add(key);
+        const at = this.rp.appliedAt.get(r.applyTick);
+        if (at) at.push(r);
+        else this.rp.appliedAt.set(r.applyTick, [r]);
+        const list = this.model.decisions[r.slot];
+        list.push(r);
+        // Streams deliver in order; keep the per-slot list sorted regardless.
+        for (let i = list.length - 1; i > 0 && (list[i - 1].issueTick > r.issueTick || (list[i - 1].issueTick === r.issueTick && list[i - 1].n > r.n)); i--) {
+          [list[i - 1], list[i]] = [list[i], list[i - 1]];
+        }
+      } else if (r.k === "check") this.rp.checks.set(r.t, r.sum);
+      else if (r.k === "result") this.model.result = r;
+    }
+  }
 
-  const labels = rp.header.agents.map((a) => a.label);
-  const markers: Marker[] = [];
-  const hits: HitEvent[] = [];
-  let endEvent: MatchModel["endEvent"] = null;
-  for (const f of frames) {
+  /** Simulate forward to `tick` (or until the world ends / the recorded result tick). Returns true if frames were added. */
+  advanceTo(tick: number): boolean {
+    const m = this.model;
+    const stopAt = Math.min(tick, m.result ? m.result.ticks : Infinity);
+    const before = m.frames.length;
+    while (!this.rp.world.over && this.rp.world.tick < stopAt && m.frames.length < 200_000) {
+      this.rp.advance();
+      const f = snap(this.rp.world, m.frames[m.frames.length - 1]);
+      m.frames.push(f);
+      this.collect(f);
+    }
+    m.endTick = m.frames.length - 1;
+    return m.frames.length > before;
+  }
+
+  /** The stream is over: no more records will arrive. */
+  finish(): void {
+    if (this.model.result) this.advanceTo(this.model.result.ticks);
+    if (this.model.live) this.model.live = { inflight: [null, null], complete: true };
+  }
+
+  private collect(f: Frame): void {
+    const m = this.model, labels = this.labels;
     for (const e of f.events) {
       if (e.type === "hit") {
-        hits.push(e);
-        markers.push(
+        m.hits.push(e);
+        m.slowTicks.push(e.t);
+        m.markers.push(
           e.self
             ? { tick: e.t, kind: "self", slot: e.victim, label: `Own goal · ${labels[e.victim]} hit itself (HP ${e.hpAfter})` }
             : { tick: e.t, kind: "hit", slot: e.owner, label: `${labels[e.owner]} hits ${labels[e.victim]} (HP ${e.hpAfter})` },
         );
-      } else if (e.type === "clash") markers.push({ tick: e.t, kind: "clash", slot: null, label: "Shell clash" });
-      else if (e.type === "fizzle") markers.push({ tick: e.t, kind: "fizzle", slot: e.slot, label: `${labels[e.slot]} fizzled (muzzle blocked)` });
-      else if (e.type === "fire") markers.push({ tick: e.t, kind: "fire", slot: e.slot, label: `${labels[e.slot]} fires` });
+      } else if (e.type === "clash") m.markers.push({ tick: e.t, kind: "clash", slot: null, label: "Shell clash" });
+      else if (e.type === "fizzle") m.markers.push({ tick: e.t, kind: "fizzle", slot: e.slot, label: `${labels[e.slot]} fizzled (muzzle blocked)` });
+      else if (e.type === "fire") m.markers.push({ tick: e.t, kind: "fire", slot: e.slot, label: `${labels[e.slot]} fires` });
       else if (e.type === "end") {
-        endEvent = e;
+        m.endEvent = e;
         const who = e.winner === null ? "Draw" : `${labels[e.winner]} wins`;
-        markers.push({ tick: e.t, kind: "end", slot: e.winner, label: `${who} · ${e.reason}` });
+        m.markers.push({ tick: e.t, kind: "end", slot: e.winner, label: `${who} · ${e.reason}` });
       }
     }
   }
+}
 
-  return {
-    header: rp.header,
-    result: rp.result,
-    walls: rp.world.walls,
-    frames,
-    endTick: frames.length - 1,
-    decisions,
-    markers,
-    hits,
-    slowTicks: hits.map((h) => h.t),
-    mismatches: rp.mismatches,
-    simVersion: { log: rp.header.sim, viewer: SIM_VERSION, stale: rp.header.sim !== SIM_VERSION },
-    endEvent,
-  };
+export function buildModel(records: LogRec[]): MatchModel {
+  const header = records.find((r) => r.k === "header") as HeaderRec | undefined;
+  if (!header) throw new Error("log has no header");
+  const b = new ModelBuilder(header, false);
+  b.add(records);
+  b.advanceTo(Infinity);
+  return b.model;
 }
 
 /** Index of the last element with key(el) <= tick, or -1. Lists are sorted by issueTick (and so by applyTick). */
@@ -140,6 +205,18 @@ export function latestApplied(list: DecisionRec[], tick: number): DecisionRec | 
 export function pendingAt(list: DecisionRec[], tick: number): DecisionRec | null {
   const i = lastAtOrBefore(list, tick, (d) => d.issueTick);
   return i >= 0 && tick < list[i].applyTick ? list[i] : null;
+}
+
+/** What the viewer knows about the decision in flight for `slot` at `tick`. While streaming, the newest decision
+ *  is known only by its issue tick (`applyTick`/`realMs` null) until it lands. */
+export type PendingView = { issueTick: number; applyTick: number | null; realMs: number | null; effMs: number | null; error?: string };
+
+export function pendingView(m: MatchModel, slot: 0 | 1, tick: number): PendingView | null {
+  const d = pendingAt(m.decisions[slot], tick);
+  if (d) return { issueTick: d.issueTick, applyTick: d.applyTick, realMs: d.realMs, effMs: d.effMs, error: d.error };
+  const inf = m.live?.inflight[slot];
+  if (inf && inf.issueTick <= tick) return { issueTick: inf.issueTick, applyTick: null, realMs: null, effMs: null };
+  return null;
 }
 
 /** Decisions landing in (from, to]. */

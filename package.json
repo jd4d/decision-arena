@@ -7,9 +7,16 @@
     "tournament": "node src/runner/cli.ts tournament",
     "analyze": "node src/analysis/cli.ts",
     "test": "node --test \"test/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit",
-    "dev": "vite",
-    "build": "vite build"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
+    "dev": "pnpm db:migrate:local && vite",
+    "build": "vite build",
+    "preview": "KEEP_DEV_VARS=1 vite build && vite preview",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "dev:vars": "node scripts/dev-vars.ts",
+    "live:smoke": "node scripts/live-smoke.ts",
+    "deploy:check": "node scripts/deploy-check.ts",
+    "cf:deploy": "pnpm build && pnpm deploy:check && wrangler deploy"
   },
   "engines": {
     "node": ">=24"
@@ -19,11 +26,20 @@
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.63.1",
+    "@cloudflare/workers-types": "^5.20261010.1",
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "typescript": "^7.0.2",
-    "vite": "^8.3.4"
+    "vite": "^8.3.4",
+    "wrangler": "^4.149.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd"
+    ]
   }
 }

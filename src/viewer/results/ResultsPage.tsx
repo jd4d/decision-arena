@@ -1,43 +1,37 @@
+// Results for the one match pool (GET /api/summary/community): the t1 tournament it was seeded with plus every match
+// run from the site, across all six latency rules.
 import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { AgentConditionStats, RunSummary } from "../../analysis/schema.ts";
 import { MAPS } from "../../sim/maps.ts";
-import { NoData } from "../browser/MatchBrowser.tsx";
-import { loadIndex, loadSummary, useAsync, type FixtureMark } from "../lib/data.ts";
+import { getCommunitySummary } from "../lib/api.ts";
+import { useAsync } from "../lib/data.ts";
 import { compareConditions, conditionDetail, conditionLabel, driveLabel, ms, num, pct, usd } from "../lib/format.ts";
-import { resultsHref } from "../lib/router.ts";
-import { distinctColors, isDevRun } from "../lib/theme.ts";
+import { MATCHES_HREF } from "../lib/router.ts";
+import { canonicalOrder, distinctColors } from "../lib/theme.ts";
 import { CalibrationChart, DriveMix, LatencyHistogram, MapBars, WinRateChart, useSettleAnimations, wilson, type AgentMeta } from "./charts.tsx";
 
-export function ResultsPage({ runId }: { runId: string | null }) {
-  const idx = useAsync(loadIndex, []);
-  if (idx.status === "loading") return <div className="page-state"><div className="spinner" />Loading results…</div>;
-  if (idx.status === "error") return <NoData error={idx.error} />;
-  const runs = idx.data.runs;
-  if (!runs.length) return <div className="page-state"><h2>No runs exported yet</h2><p>Run <code>pnpm analyze</code> after a tournament.</p></div>;
-  const real = runs.filter((r) => !isDevRun(r.runId));
-  const sel = runs.find((r) => r.runId === runId) ?? real[real.length - 1] ?? runs[runs.length - 1];
+/** Size of the offline tournament the pool was seeded with (runs/t1: 6 rules × 3 maps × 25 seeds × both sides). */
+const T1_MATCHES = 900;
+
+export function ResultsPage() {
+  const s = useAsync(getCommunitySummary, []);
   return (
     <div className="results">
-      <nav className="runtabs" aria-label="Runs">
-        {runs.map((r) => (
-          <a key={r.runId} href={resultsHref(r.runId)} className={`runtab ${r.runId === sel.runId ? "is-on" : ""}`} aria-current={r.runId === sel.runId ? "page" : undefined}>
-            {r.runId}
-            <span className="runtab__n">{r.matches}</span>
-            {isDevRun(r.runId) && <span className="runtab__dev">dev</span>}
-          </a>
-        ))}
-      </nav>
-      {runId && runId !== sel.runId && <div className="notice">Run “{runId}” isn’t in the exported data; showing {sel.runId}.</div>}
-      <RunResults key={sel.runId} runId={sel.runId} file={sel.summaryFile} />
+      {s.status === "loading" ? (
+        <div className="page-state"><div className="spinner" />Loading results…</div>
+      ) : s.status === "error" ? (
+        <div className="page-state page-state--error"><h2>Results are unavailable</h2><p>{s.error.message}</p></div>
+      ) : !s.data.conditions.some((c) => c.matches > 0) ? (
+        <div className="empty empty--big">
+          <b>No matches yet.</b>
+          <span>Results appear here as soon as the first match finishes.</span>
+          <a className="btn btn--primary" href="#/run">Run the first match →</a>
+        </div>
+      ) : (
+        <Summary s={s.data} />
+      )}
     </div>
   );
-}
-
-function RunResults({ runId, file }: { runId: string; file: string }) {
-  const s = useAsync(() => loadSummary(file), [file]);
-  if (s.status === "loading") return <div className="page-state"><div className="spinner" />Loading {runId}…</div>;
-  if (s.status === "error") return <div className="page-state page-state--error"><h2>Summary unavailable</h2><p>{s.error.message}</p></div>;
-  return <Summary s={s.data} />;
 }
 
 type Agg = {
@@ -58,12 +52,12 @@ function aggregate(s: RunSummary, id: string): Agg | null {
   };
 }
 
-function Summary({ s: raw }: { s: RunSummary & FixtureMark }) {
+function Summary({ s: raw }: { s: RunSummary }) {
   const [metric, setMetric] = useState<"winRate" | "scoreRate">("winRate");
   const rootRef = useRef<HTMLDivElement>(null);
   useSettleAnimations(rootRef);
   // Conditions in reading order: equal-latency control, scaled by multiplier, then swapped.
-  const s = useMemo(() => ({ ...raw, conditions: [...raw.conditions].sort((a, b) => compareConditions(a.condition, b.condition)) }), [raw]);
+  const s = useMemo(() => ({ ...raw, agents: canonicalOrder(raw.agents), conditions: [...raw.conditions].sort((a, b) => compareConditions(a.condition, b.condition)) }), [raw]);
   const agents: AgentMeta[] = useMemo(() => {
     const cs = distinctColors(s.agents.map((a) => a.id));
     return s.agents.map((a, i) => ({ id: a.id, label: a.label, color: cs[i] }));
@@ -99,30 +93,26 @@ function Summary({ s: raw }: { s: RunSummary & FixtureMark }) {
     return out;
   }, [s, agents]);
 
-  const dev = isDevRun(s.runId) || !!s.devFixture;
-  const goToMatches = () => {
-    try { sessionStorage.setItem("decision-arena:filters", JSON.stringify({ run: s.runId })); } catch { /* ignore */ }
-    location.hash = "#/";
-  };
-
   return (
     <div className="summary" ref={rootRef}>
       <header className="summary__head">
         <div>
-          <div className="kicker">Run results {dev && <span className="pill pill--dev">dev data</span>}</div>
-          <h1>{s.runId}</h1>
+          <div className="kicker">Match pool</div>
+          <h1>Results</h1>
           <div className="summary__meta">
-            <span>{totalMatches} matches</span>
-            <span>{s.conditions.length} condition{s.conditions.length === 1 ? "" : "s"}</span>
+            <span>{totalMatches.toLocaleString()} matches</span>
+            <span>{s.conditions.length} latency rule{s.conditions.length === 1 ? "" : "s"}</span>
             <span>{s.sim} · {s.protocol}</span>
-            <span>total cost {usd(s.totalCostUsd)}</span>
-            <span>generated {new Date(s.generatedAt).toLocaleString()}</span>
+            <span>total model cost {usd(s.totalCostUsd)}</span>
+            <span>updated {new Date(s.generatedAt).toLocaleString()}</span>
           </div>
         </div>
-        <button className="btn" onClick={goToMatches}>Browse matches →</button>
+        <a className="btn" href={MATCHES_HREF}>Browse matches →</a>
       </header>
-      {s.devFixture && <div className="notice notice--dev"><b>Dev fixture.</b> {s.devFixture}</div>}
-      {dev && !s.devFixture && <div className="notice notice--dev">Development or pilot run. Numbers are real but not benchmark results.</div>}
+      <div className="notice notice--pool notice--community">
+        <b>One pool.</b> It started with the {T1_MATCHES}-match t1 tournament, run locally, and every match run from this site adds to it:
+        {" "}{totalMatches.toLocaleString()} matches so far. Every match is tagged with where it ran. <a href="#/methodology/caveats">Caveats →</a>
+      </div>
 
       <Headline s={s} agents={agents} mix={mix} />
 
@@ -138,7 +128,7 @@ function Summary({ s: raw }: { s: RunSummary & FixtureMark }) {
                 <>
                   <div className="agentcard__big">
                     {g.wins + g.losses > 0 ? pct(wr!.p) : "—"}
-                    <small>win rate{g.wins + g.losses > 0 ? ` · ${pct(wr!.lo)}–${pct(wr!.hi)}` : ""}</small>
+                    <small>win rate, all rules{g.wins + g.losses > 0 ? ` · ${pct(wr!.lo)}–${pct(wr!.hi)}` : ""}</small>
                   </div>
                   <dl className="agentcard__stats">
                     <div><dt>Record</dt><dd>{g.wins}–{g.losses}–{g.draws}</dd></div>
@@ -168,10 +158,10 @@ function Summary({ s: raw }: { s: RunSummary & FixtureMark }) {
       </Panel>
 
       <div className="grid2">
-        <Panel title="Decision latency" sub="Measured real response time per decision, all conditions. Share of each agent’s decisions per 25 ms bin; dashed lines are medians.">
+        <Panel title="Decision latency" sub={`Measured real response time per decision, all rules. Share of each agent’s decisions per 25 ms bin; dashed lines are medians.`}>
           <LatencyHistogram data={s.latencyHistogram} agents={agents} />
         </Panel>
-        <Panel title="Fire calibration" sub="For shots fired, how often the shell hit, by the fire probability of the deciding call. All conditions pooled; the dashed diagonal marks hit rate equal to P(fire).">
+        <Panel title="Fire calibration" sub="For shots fired, how often the shell hit, by the fire probability of the deciding call. All rules pooled; the dashed diagonal marks hit rate equal to P(fire).">
           <CalibrationChart bins={calib} agents={agents} />
         </Panel>
         <Panel title="Results by map" sub="Wins per agent and draws.">
@@ -182,7 +172,7 @@ function Summary({ s: raw }: { s: RunSummary & FixtureMark }) {
         </Panel>
       </div>
 
-      <Panel title="Shooting" sub="Per condition and agent." wide>
+      <Panel title="Shooting" sub="Per latency rule and agent." wide>
         <StatTable s={s} agents={agents} cols={[
           ["Record", (r) => `${r.wins}–${r.losses}–${r.draws}`],
           ["Win rate", (r) => (r.wins + r.losses ? `${pct(r.winRate.p)} [${pct(r.winRate.lo)}–${pct(r.winRate.hi)}]` : "—")],
@@ -196,7 +186,7 @@ function Summary({ s: raw }: { s: RunSummary & FixtureMark }) {
           ["First hit", (r) => (r.meanFirstHitS === null ? "—" : `${num(r.meanFirstHitS, 1)} s`)],
         ]} />
       </Panel>
-      <Panel title="Speed, reliability and cost" sub="Per condition and agent. Effective latency is the game-time delay actually applied." wide>
+      <Panel title="Speed, reliability and cost" sub="Per latency rule and agent. Effective latency is the game-time delay actually applied." wide>
         <StatTable s={s} agents={agents} cols={[
           ["Decisions", (r) => String(r.decisions)],
           ["Dec / s", (r) => num(r.decisionsPerS, 2)],
@@ -232,8 +222,8 @@ function Headline({ s, agents, mix }: { s: RunSummary; agents: AgentMeta[]; mix:
     const matches = conds.reduce((t, c) => t + c.matches, 0), draws = conds.reduce((t, c) => t + c.draws, 0);
     const detail = conds.length === 1 ? conditionDetail(conds[0].condition) : "";
     const sub = conds.length
-      ? `${conds.map((c) => c.condition).join(", ")} · ${matches} matches${draws ? ` · ${draws} draw${draws === 1 ? "" : "s"}` : ""}${detail ? ` · ${detail}` : ""}`
-      : "not in this run";
+      ? `${matches} matches${draws ? ` · ${draws} draw${draws === 1 ? "" : "s"}` : ""}${detail ? ` · ${detail}` : ""}`
+      : "no matches yet";
     return { ...h, sub, cells };
   });
   const totals = agents.map((a) => {
@@ -249,7 +239,7 @@ function Headline({ s, agents, mix }: { s: RunSummary; agents: AgentMeta[]; mix:
       <header className="panel__head">
         <div>
           <h2 id="headline-h">Headline</h2>
-          <p>Computed from this run. Win rate is wins ÷ decisive matches (draws excluded) with a Wilson 95% interval; records are W–L–D.</p>
+          <p>Computed from every finished match in the pool. Win rate is wins ÷ decisive matches (draws excluded) with a Wilson 95% interval; records are W–L–D.</p>
         </div>
       </header>
       <div className="table-wrap">
@@ -327,13 +317,13 @@ function Panel({ title, sub, children, wide, action }: { title: string; sub?: st
 }
 
 function StatTable({ s, agents, cols }: { s: RunSummary; agents: AgentMeta[]; cols: [string, (r: AgentConditionStats) => string][] }) {
-  if (!s.conditions.length) return <div className="chart-empty">No completed matches in this run yet.</div>;
+  if (!s.conditions.length) return <div className="chart-empty">No finished matches yet.</div>;
   return (
     <div className="table-wrap">
       <table className="table">
         <thead>
           <tr>
-            <th>Condition</th>
+            <th>Latency rule</th>
             <th>Agent</th>
             {cols.map(([h]) => <th key={h} className="num">{h}</th>)}
           </tr>

@@ -6,3 +6,4 @@ public/data/
 .env*
 .dev.vars
 .wrangler/
+.import/

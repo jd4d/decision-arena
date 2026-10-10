@@ -1,3 +1,5 @@
+import { PUBLIC_CONDITIONS, type PublicCondition } from "../../api/contract.ts";
+
 export const pct = (x: number | null | undefined, digits = 0) =>
   x === null || x === undefined || !Number.isFinite(x) ? "—" : `${(x * 100).toFixed(digits)}%`;
 
@@ -30,9 +32,10 @@ export const titleCase = (s: string) => s.replace(/(^|[\s_-])(\w)/g, (_, a: stri
 
 export const driveLabel = (d: string) => d.replace("_", " ");
 
-/** Short human condition name: "fixed-250" -> "Equal latency (250 ms)", "scaled-1" -> "Real latency",
- *  "scaled-4" -> "Game ×4 speed", "swap-1" -> "Swapped latency". */
+/** Short human condition name. The six public rules use their contract labels ("scaled-1" -> "Real latency",
+ *  "fixed-250" -> "Equal latency (250 ms)", "scaled-4" -> "Frantic game (×4)"); anything else is derived from its id. */
 export function conditionLabel(c: string): string {
+  if (c in PUBLIC_CONDITIONS) return PUBLIC_CONDITIONS[c as PublicCondition].label;
   const [kind, v] = c.split("-");
   if (kind === "scaled") return v === "1" ? "Real latency" : `Game ×${v} speed`;
   if (kind === "fixed") return `Equal latency (${v} ms)`;
@@ -66,3 +69,27 @@ export function compareConditions(a: string, b: string): number {
   const [ka, va] = rank(a), [kb, vb] = rank(b);
   return ka - kb || va - vb || a.localeCompare(b);
 }
+
+/** One plain line on what a condition means for the match (the contract blurb for the six public rules). */
+export function conditionBlurb(c: string): string {
+  if (c in PUBLIC_CONDITIONS) return PUBLIC_CONDITIONS[c as PublicCondition].blurb;
+  const [kind, v] = c.split("-");
+  if (kind === "fixed") return `Every decision lands exactly ${v} ms after it was asked for, so only the quality of the choices differs.`;
+  if (kind === "scaled") return `Response time counts ${v}× in game time.`;
+  if (kind === "swap") return "Each model plays at the other model’s speed.";
+  return "";
+}
+
+export const reasonLabel = (r: string) =>
+  r === "destroyed" ? "Tank destroyed" : r === "mutual" ? "Mutual destruction" : r === "time" ? "Time up" : r === "aborted" ? "Match aborted" : titleCase(r);
+
+/** Signed percentage-point change, e.g. "+1.4 pts". */
+export function ptsDelta(d: number): string {
+  const v = d * 100;
+  if (Math.abs(v) < 0.05) return "±0 pts";
+  return `${v > 0 ? "+" : "−"}${Math.abs(v).toFixed(1)} pts`;
+}
+
+/** Provenance tag for a pool match: seed matches (imported from the local t1 runs) are marked; site matches aren't. */
+export const originTag = (origin: string | undefined) => (origin === "t1-local" ? "seed · t1" : null);
+export const ORIGIN_NOTE = "Seed match from the t1 tournament runs, played locally rather than from this site";

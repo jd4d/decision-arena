@@ -1,0 +1,57 @@
+// Cloudflare Worker for decisionarena.ai: static viewer (Workers Static Assets, built by Vite into dist/) + /api/*.
+// Local dev: `pnpm dev` (Vite + @cloudflare/vite-plugin, workerd). Deploy steps: README.md "Deploy".
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "decision-arena",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  // No Node built-ins are used, so nodejs_compat is not enabled.
+
+  // The viewer is a SPA; /api/* always reaches the Worker first. Static benchmark data is served from /data/*.
+  // (The Vite plugin fills in the assets directory from the client build.)
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "MATCH_ROOM", "class_name": "MatchRoom" },
+      { "name": "LOBBY", "class_name": "Lobby" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MatchRoom", "Lobby"] }],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "decision-arena",
+      // D1 "decision-arena" (region ENAM) in the Simplify Studios account. Not a secret.
+      "database_id": "f086f038-f178-4628-a0ea-64a656c8e010",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LOGS",
+      // Created with `wrangler r2 bucket create decision-arena-logs` once R2 is enabled on the account.
+      "bucket_name": "decision-arena-logs"
+    }
+  ],
+
+  // Secret (not here): OPENROUTER_API_KEY via `wrangler secret put OPENROUTER_API_KEY`, or .dev.vars locally.
+  "vars": {
+    "MAX_CONCURRENT": "8", // site-wide live-match cap; beyond it matches wait in a FIFO queue
+    "MAX_QUEUE": "50", // queue length beyond which new matches are refused as "busy"
+    "BUDGET_USD": "95" // stop accepting matches once recorded community spend reaches this
+  },
+
+  // Custom domain (the decisionarena.ai zone must be on the same Cloudflare account before the first deploy).
+  "workers_dev": true, // staging URL: decision-arena.decision-arena.workers.dev
+  "routes": [
+    { "pattern": "decisionarena.ai", "custom_domain": true },
+    { "pattern": "www.decisionarena.ai", "custom_domain": true }
+  ],
+  "observability": { "enabled": true }
+}

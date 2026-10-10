@@ -19,6 +19,8 @@ export type MatchIndexEntry = {
   durationS: number;
   hp: [number, number];
   highlights: string[]; // e.g. "self-hit", "comeback", "shell clash", "last-second kill"
+  /** Community pool only: "web" = run from the site (Cloudflare, eastern North America); "t1-local" = imported real-latency match from benchmark t1 (run locally). */
+  origin?: "web" | "t1-local";
 };
 
 export type DataIndex = {

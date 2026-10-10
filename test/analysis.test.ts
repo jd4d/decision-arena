@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { DecisionRec, EventRec, LogRec, ResultRec, SlotStats } from "../src/runner/log.ts";
-import { agentConditionStats, fireBin, highlights, indexEntry, latencyHistogram, summarizeRun, toMatch, wilson } from "../src/analysis/aggregate.ts";
+import {
+  addDigest, agentConditionStats, digestMatch, emptyAcc, emptyHist, finalizeSummary, fireBin, highlights, histPercentile, indexEntry, latencyHistogram,
+  mergeDigests, percentile, summarizeRun, toMatch, wilson, type Hist,
+} from "../src/analysis/aggregate.ts";
 
 const st = (o: Partial<SlotStats> = {}): SlotStats => ({ decisions: 2, errors: 0, shots: 0, fizzles: 0, hits: 0, selfHits: 0, damageTaken: 0, cost: 0.01, latencyMs: { p50: 0, p90: 0, mean: 0, max: 0 }, firstHitTick: null, ...o });
 
@@ -91,4 +94,87 @@ test("latency histogram caps and summary/index shape", () => {
   assert.equal(sum.totalCostUsd, 0.02);
   const e = indexEntry(m);
   assert.deepEqual([e.agents, e.winner, e.durationS], [["a", "b"], 1, 10]);
+});
+
+// ---------- Digests ----------
+
+const hist = (xs: number[]): Hist => {
+  const h = emptyHist();
+  for (const x of xs) {
+    const i = Math.min(60, Math.floor(x / 25));
+    while (h.counts.length <= i) h.counts.push(0);
+    h.counts[i]++;
+    h.min = h.n ? Math.min(h.min, x) : x;
+    h.max = h.n ? Math.max(h.max, x) : x;
+    h.n++;
+    h.sum += x;
+  }
+  return h;
+};
+
+test("histogram percentiles: exact for constant values, within one 25 ms bin otherwise", () => {
+  assert.equal(histPercentile(hist([250, 250, 250, 250]), 0.5), 250);
+  assert.equal(histPercentile(hist([]), 0.5), 0);
+  assert.equal(histPercentile(hist([180]), 0.9), 180);
+  const xs = Array.from({ length: 400 }, (_, i) => 150 + ((i * 37) % 250));
+  for (const q of [0.5, 0.9]) assert.ok(Math.abs(histPercentile(hist(xs), q) - percentile(xs, q)) <= 25, `q=${q}`);
+  // overflow bin interpolates up to the observed max
+  const big = hist([100, 2000, 3000]);
+  assert.ok(histPercentile(big, 0.9) >= 1500 && histPercentile(big, 0.9) <= 3000);
+  const p10 = histPercentile(big, 0.1);
+  assert.ok(p10 >= 100 && p10 < 125); // within the 100-125 ms bin
+});
+
+function sampleMatches() {
+  const detail = (p: number) => ({ driveP: {}, turretP: {}, fireP: p });
+  const m1 = toMatch(log("a", "b", [
+    { t: 10, type: "fire", slot: 0, shell: 1 }, { t: 20, type: "hit", shell: 1, owner: 0, victim: 1, self: false, x: 0, y: 0, hpAfter: 2 },
+    { t: 40, type: "fire", slot: 1, shell: 2 }, { t: 45, type: "hit", shell: 2, owner: 1, victim: 1, self: true, x: 0, y: 0, hpAfter: 1 },
+  ], { winner: 0, reason: "destroyed", hp: [3, 1], stats: [st({ firstHitTick: 20, cost: 0.02 }), st({ cost: 0.01 })] },
+  [{ applyTick: 5, realMs: 170, action: { drive: "forward", turret: 0, fire: true }, detail: detail(0.85) }, { slot: 1, applyTick: 30, realMs: 260, effMs: 260, action: { drive: "reverse", turret: 0, fire: true }, detail: detail(0.95) }], "fixed-250", "open"))!;
+  const m2 = toMatch(log("b", "a", [], { winner: 0, reason: "destroyed", hp: [3, 0] }, [{ realMs: 300 }, { slot: 1, realMs: 190 }], "scaled-1", "pillars"))!;
+  const m3 = toMatch(log("a", "b", [], {}, [{ realMs: 210 }], "scaled-1", "open"))!;
+  return [m1, m2, m3];
+}
+
+test("digests are small JSON and round-trip", () => {
+  for (const m of sampleMatches()) {
+    const d = digestMatch(m);
+    assert.deepEqual(JSON.parse(JSON.stringify(d)), d);
+    assert.equal(d.slots[0].agent.id, m.header.agents[0].id);
+    assert.ok(JSON.stringify(d).length < 2000);
+  }
+  const d1 = digestMatch(sampleMatches()[0]);
+  assert.deepEqual([d1.slots[0].shots, d1.slots[0].hits, d1.slots[1].selfHits], [1, 1, 1]);
+  assert.deepEqual(d1.slots[0].fireN, [0, 0, 0, 0, 1, 0]);
+  assert.deepEqual(d1.slots[0].fireHit, [0, 0, 0, 0, 1, 0]);
+  assert.deepEqual(d1.slots[1].fireN, [0, 0, 0, 0, 0, 1]);
+  assert.equal(d1.slots[0].real.n, 1);
+  assert.equal(d1.slots[0].real.counts[6], 1); // 170 ms -> bin 6
+});
+
+test("mergeDigests equals summarizeRun, is order-independent in totals, and folds incrementally", () => {
+  const ms = sampleMatches();
+  const direct = summarizeRun("r", ms, "now");
+  const merged = mergeDigests("r", ms.map(digestMatch), "now");
+  assert.deepEqual(merged, direct);
+  // Incremental fold through JSON (as cached in D1) gives the same summary.
+  let acc = emptyAcc();
+  for (const m of ms) acc = addDigest(JSON.parse(JSON.stringify(acc)), JSON.parse(JSON.stringify(digestMatch(m))));
+  assert.deepEqual(finalizeSummary("r", acc, "now"), direct);
+  assert.equal(acc.matches, 3);
+  // Shape checks.
+  assert.deepEqual(direct.conditions.map((c) => c.condition), ["fixed-250", "scaled-1"]);
+  assert.deepEqual(direct.maps.map((m) => [m.map, m.matches, m.winsByAgent.a, m.winsByAgent.b, m.draws]), [["open", 2, 1, 0, 1], ["pillars", 1, 0, 1, 0]]);
+  const s1 = direct.conditions[1].byAgent;
+  assert.deepEqual([s1.a.wins, s1.a.losses, s1.a.draws, s1.b.wins, s1.b.draws], [0, 1, 1, 1, 1]);
+  assert.equal(direct.conditions[0].byAgent.b.selfHits, 1);
+  assert.equal(direct.conditions[0].byAgent.a.latencyMs.p50, 170);
+  assert.equal(direct.latencyHistogram.a.counts.length, 61);
+  assert.equal(direct.latencyHistogram.a.counts.reduce((x, y) => x + y, 0), 3); // 170, 190, 210
+  assert.ok(Math.abs(direct.totalCostUsd - 0.07) < 1e-12);
+  // Reversed order: same per-condition numbers (only first-appearance ordering may differ).
+  const rev = mergeDigests("r", ms.map(digestMatch).reverse(), "now");
+  assert.deepEqual(rev.conditions.map((c) => c.byAgent.a), direct.conditions.map((c) => c.byAgent.a));
+  assert.deepEqual(mergeDigests("r", [], "now").conditions, []);
 });

@@ -1,123 +1,182 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+// One pool of matches from /api/matches, newest first, loaded page by page as the list scrolls. Filters run in the
+// browser over the pages loaded so far; while a filter is on, more pages load until the list fills or the pool ends.
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { DEFAULT_PUBLIC_CONDITION, PUBLIC_CONDITIONS } from "../../api/contract.ts";
 import type { MatchIndexEntry } from "../../analysis/schema.ts";
-import { MAPS } from "../../sim/maps.ts";
-import { loadIndex, NotFound, useAsync } from "../lib/data.ts";
-import { compareConditions, conditionLabel, mmss, titleCase } from "../lib/format.ts";
-import { matchHref, resultsHref } from "../lib/router.ts";
-import { distinctColors, isDevRun } from "../lib/theme.ts";
+import { MAP_IDS, MAPS } from "../../sim/maps.ts";
+import { ApiFailure, listMatches, useStatus } from "../lib/api.ts";
+import { compareConditions, conditionLabel, mmss, ORIGIN_NOTE, originTag, titleCase } from "../lib/format.ts";
+import { poolMatchHref } from "../lib/router.ts";
+import { distinctColors } from "../lib/theme.ts";
 import { MapThumb } from "./MapThumb.tsx";
 
-type Filters = { run: string; condition: string; map: string; agent: string; winner: string; tags: string[]; sort: string };
-const DEFAULT: Filters = { run: "all", condition: "all", map: "all", agent: "all", winner: "all", tags: [], sort: "run" };
-const KEY = "decision-arena:filters";
-const PAGE = 48;
+type Filters = { condition: string; map: string; winner: string; tags: string[] };
+const DEFAULT: Filters = { condition: "all", map: "all", winner: "all", tags: [] };
+const KEY = "decision-arena:filters:pool";
+const PAGE = 100; // API maximum per request
+const SHOW = 48; // cards added to the DOM per scroll step
 
 function loadFilters(): Filters {
-  try { return { ...DEFAULT, ...JSON.parse(sessionStorage.getItem(KEY) ?? "{}") }; } catch { return DEFAULT; }
+  try {
+    const f = { ...DEFAULT, ...JSON.parse(sessionStorage.getItem(KEY) ?? "{}") } as Filters;
+    return { condition: String(f.condition), map: String(f.map), winner: String(f.winner), tags: Array.isArray(f.tags) ? f.tags.map(String) : [] };
+  } catch {
+    return DEFAULT;
+  }
 }
 
+type Pages = { matches: MatchIndexEntry[]; next: string | null; loading: boolean; error: ApiFailure | null; started: boolean };
+
 export function MatchBrowser() {
-  const idx = useAsync(loadIndex, []);
-  const [f, setF] = useState<Filters>(loadFilters);
-  const [limit, setLimit] = useState(PAGE);
-  useEffect(() => { sessionStorage.setItem(KEY, JSON.stringify(f)); setLimit(PAGE); }, [f]);
-  const set = (patch: Partial<Filters>) => setF((o) => ({ ...o, ...patch }));
+  const { status } = useStatus(30_000);
+  const [pages, setPages] = useState<Pages>({ matches: [], next: null, loading: true, error: null, started: false });
+  const busy = useRef(false);
+  const load = useCallback(async (cursor: string | null) => {
+    if (busy.current) return;
+    busy.current = true;
+    setPages((p) => ({ ...p, loading: true, error: null }));
+    try {
+      const r = await listMatches(cursor, PAGE);
+      setPages((p) => ({ matches: cursor ? [...p.matches, ...r.matches] : r.matches, next: r.nextCursor, loading: false, error: null, started: true }));
+    } catch (e) {
+      setPages((p) => ({ ...p, loading: false, error: e as ApiFailure, started: true }));
+    } finally {
+      busy.current = false;
+    }
+  }, []);
+  useEffect(() => { void load(null); }, [load]);
 
-  const data = idx.status === "ready" ? idx.data : null;
-  const options = useMemo(() => {
-    const ms = data?.matches ?? [];
-    const uniq = (xs: string[]) => [...new Set(xs)].sort();
-    const agents = new Map<string, string>();
-    for (const m of ms) m.agents.forEach((a, i) => agents.set(a, m.labels[i]));
-    return {
-      runs: data?.runs.map((r) => r.runId) ?? [],
-      conditions: uniq(ms.map((m) => m.condition)).sort(compareConditions),
-      maps: uniq(ms.map((m) => m.map)),
-      agents: [...agents.entries()].sort((a, b) => a[1].localeCompare(b[1])),
-      tags: uniq(ms.flatMap((m) => m.highlights)),
-    };
-  }, [data]);
-
-  const list = useMemo(() => {
-    if (!data) return [];
-    const runOrder = new Map(data.runs.map((r, i) => [r.runId, (isDevRun(r.runId) ? 1000 : 0) + i]));
-    const out = data.matches.filter((m) =>
-      (f.run === "all" || m.runId === f.run) &&
-      (f.condition === "all" || m.condition === f.condition) &&
-      (f.map === "all" || m.map === f.map) &&
-      (f.agent === "all" || m.agents.includes(f.agent)) &&
-      (f.winner === "all" || (f.winner === "draw" ? m.winner === null : m.winner !== null && m.agents[m.winner] === f.winner)) &&
-      f.tags.every((t) => m.highlights.includes(t)),
+  const total = status?.communityMatches ?? null;
+  let body;
+  if (!pages.started) body = <div className="page-state"><div className="spinner" />Loading matches…</div>;
+  else if (pages.error && !pages.matches.length) {
+    body = (
+      <div className="page-state page-state--error">
+        <h2>Matches are unavailable</h2>
+        <p>{pages.error.message}</p>
+        <button className="btn" onClick={() => void load(null)}>Try again</button>
+      </div>
     );
-    const byRun = (a: MatchIndexEntry, b: MatchIndexEntry) => (runOrder.get(a.runId)! - runOrder.get(b.runId)!) || a.matchId.localeCompare(b.matchId, undefined, { numeric: true });
-    const sorters: Record<string, (a: MatchIndexEntry, b: MatchIndexEntry) => number> = {
-      run: byRun,
-      short: (a, b) => a.durationS - b.durationS || byRun(a, b),
-      long: (a, b) => b.durationS - a.durationS || byRun(a, b),
-      action: (a, b) => b.highlights.length - a.highlights.length || a.durationS - b.durationS,
-    };
-    return out.sort(sorters[f.sort] ?? byRun);
-  }, [data, f]);
-
-  if (idx.status === "loading") return <div className="page-state"><div className="spinner" />Loading matches…</div>;
-  if (idx.status === "error") return <NoData error={idx.error} />;
-  const d = idx.data;
-  const realRuns = d.runs.filter((r) => !isDevRun(r.runId));
-  const featured = realRuns[realRuns.length - 1] ?? d.runs[d.runs.length - 1];
-  const active = JSON.stringify(f) !== JSON.stringify(DEFAULT);
+  } else if (!pages.matches.length) {
+    body = (
+      <div className="empty empty--big">
+        <b>No matches yet.</b>
+        <span>Every finished match lands here, newest first.</span>
+        <a className="btn btn--primary" href="#/run">Run the first one →</a>
+      </div>
+    );
+  } else {
+    body = <FilteredCards pages={pages} loadMore={pages.next ? () => void load(pages.next) : null} />;
+  }
 
   return (
     <div className="browser">
-      <section className="hero">
-        <div className="hero__copy">
-          <div className="kicker"><span className="live-dot" /> Real-time decision benchmark</div>
-          <h1>Two decision models. One tank each. <em>Thinking costs time.</em></h1>
-          <p>Every decision is applied after the model’s measured latency, so the enemy keeps moving while it thinks. Watch the replays, then check who controls better and how much speed matters.</p>
+      <header className="browser__head">
+        <div>
+          <div className="kicker">Replays</div>
+          <h1>Matches</h1>
         </div>
-        <div className="hero__stats">
-          <Stat label="Matches" value={String(d.matches.length)} />
-          <Stat label="Runs" value={String(d.runs.length)} />
-          <Stat label="Conditions" value={String(new Set(d.matches.map((m) => m.condition)).size)} />
-          {featured && <a className="btn btn--primary" href={resultsHref(featured.runId)}>Results · {featured.runId} →</a>}
-        </div>
-      </section>
+        {total !== null && total > 0 && <div className="browser__total"><b>{total.toLocaleString()}</b> match{total === 1 ? "" : "es"} in the pool</div>}
+      </header>
+      <p className="browser__intro">
+        Every match, newest first. The pool started with the t1 tournament, run locally (tagged <span className="prov">seed · t1</span>), and every match run
+        from this site adds to it. Matches use real latency unless the card names another rule.
+      </p>
+      {body}
+    </div>
+  );
+}
 
-      {d.devFixture && <div className="notice notice--dev"><b>Dev fixture data.</b> {d.devFixture}</div>}
+function FilteredCards({ pages, loadMore }: { pages: Pages; loadMore: (() => void) | null }) {
+  const matches = pages.matches;
+  const [f, setF] = useState<Filters>(loadFilters);
+  const [limit, setLimit] = useState(SHOW);
+  useEffect(() => { try { sessionStorage.setItem(KEY, JSON.stringify(f)); } catch { /* ignore */ } setLimit(SHOW); }, [f]);
+  const set = (patch: Partial<Filters>) => setF((o) => ({ ...o, ...patch }));
 
+  const options = useMemo(() => {
+    const uniq = (xs: string[]) => [...new Set(xs)];
+    const agents = new Map<string, string>();
+    for (const m of matches) m.agents.forEach((a, i) => agents.set(a, m.labels[i]));
+    return {
+      conditions: uniq([...Object.keys(PUBLIC_CONDITIONS), ...matches.map((m) => m.condition)]).sort(compareConditions),
+      maps: uniq([...MAP_IDS, ...matches.map((m) => m.map)]),
+      agents: [...agents.entries()].sort((a, b) => a[1].localeCompare(b[1])),
+      tags: uniq(matches.flatMap((m) => m.highlights)).sort(),
+    };
+  }, [matches]);
+
+  const list = useMemo(() => matches.filter((m) =>
+    (f.condition === "all" || m.condition === f.condition) &&
+    (f.map === "all" || m.map === f.map) &&
+    (f.winner === "all" || (f.winner === "draw" ? m.winner === null : m.winner !== null && m.agents[m.winner] === f.winner)) &&
+    f.tags.every((t) => m.highlights.includes(t)),
+  ), [matches, f]);
+
+  const active = JSON.stringify(f) !== JSON.stringify(DEFAULT);
+  const shown = list.slice(0, limit);
+  const canGrow = list.length > limit || !!loadMore;
+
+  // Infinite scroll: when the end of the list comes near, show more of what is loaded, else fetch the next page.
+  // The observer is rebuilt whenever the list changes, so a sentinel that stays on screen (a sparse filter) keeps
+  // pulling pages until the screen fills or the pool runs out.
+  const sentinel = useRef<HTMLDivElement>(null);
+  const grow = useRef<() => void>(() => {});
+  grow.current = () => {
+    if (list.length > limit) setLimit((l) => l + SHOW);
+    else if (loadMore && !pages.loading && !pages.error) loadMore();
+  };
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || !canGrow) return;
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) grow.current(); }, { rootMargin: "900px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [canGrow, list.length, limit, matches.length, pages.loading]);
+
+  return (
+    <>
       <div className="filters" role="search">
-        <Select label="Run" value={f.run} onChange={(run) => set({ run })} options={options.runs.map((r) => [r, isDevRun(r) ? `${r} (dev)` : r])} />
-        <Select label="Condition" value={f.condition} onChange={(condition) => set({ condition })} options={options.conditions.map((c) => [c, conditionLabel(c)])} />
+        <Select label="Latency rule" value={f.condition} onChange={(condition) => set({ condition })} options={options.conditions.map((c) => [c, conditionLabel(c)])} />
         <Select label="Map" value={f.map} onChange={(map) => set({ map })} options={options.maps.map((m) => [m, MAPS[m]?.name ?? m])} />
-        <Select label="Agent" value={f.agent} onChange={(agent) => set({ agent })} options={options.agents} />
         <Select label="Winner" value={f.winner} onChange={(winner) => set({ winner })} options={[["draw", "Draws"], ...options.agents]} />
-        <Select label="Sort" value={f.sort} onChange={(sort) => set({ sort })} options={[["short", "Shortest"], ["long", "Longest"], ["action", "Most highlights"]]} allLabel="By run" allValue="run" />
         {active && <button className="btn btn--ghost btn--sm filters__reset" onClick={() => setF(DEFAULT)}>Reset</button>}
       </div>
-      {options.tags.length > 0 && (
-        <div className="tagbar" aria-label="Highlight filters">
-          {options.tags.map((t) => {
-            const on = f.tags.includes(t);
-            return (
-              <button key={t} className={`tag tag--${slug(t)} ${on ? "is-on" : ""}`} aria-pressed={on} onClick={() => set({ tags: on ? f.tags.filter((x) => x !== t) : [...f.tags, t] })}>
-                {titleCase(t)}
-              </button>
-            );
-          })}
-          <span className="tagbar__count">{list.length} match{list.length === 1 ? "" : "es"}</span>
-        </div>
-      )}
+      <div className="tagbar" aria-label="Highlight filters">
+        {options.tags.map((t) => {
+          const on = f.tags.includes(t);
+          return (
+            <button key={t} className={`tag tag--${slug(t)} ${on ? "is-on" : ""}`} aria-pressed={on} onClick={() => set({ tags: on ? f.tags.filter((x) => x !== t) : [...f.tags, t] })}>
+              {titleCase(t)}
+            </button>
+          );
+        })}
+        <span className="tagbar__count" aria-live="polite">
+          {active
+            ? `${list.length.toLocaleString()} of ${matches.length.toLocaleString()} loaded match${matches.length === 1 ? "" : "es"}${loadMore ? " · filters apply as more load" : ""}`
+            : `${matches.length.toLocaleString()} match${matches.length === 1 ? "" : "es"}${loadMore ? " loaded" : ""}`}
+        </span>
+      </div>
 
-      {list.length === 0 ? (
+      {list.length === 0 && !loadMore ? (
         <div className="empty">No matches fit these filters. <button className="linkish" onClick={() => setF(DEFAULT)}>Clear filters</button></div>
       ) : (
         <div className="cards">
-          {list.slice(0, limit).map((m, i) => <MatchCard key={`${m.runId}/${m.matchId}`} m={m} i={i} />)}
+          {shown.map((m, i) => <MatchCard key={m.matchId} m={m} i={i % SHOW} />)}
         </div>
       )}
-      {list.length > limit && (
-        <div className="more"><button className="btn" onClick={() => setLimit((l) => l + PAGE)}>Show more ({list.length - limit} left)</button></div>
-      )}
-    </div>
+      <div ref={sentinel} className="more">
+        {pages.error ? (
+          <span className="more__err">Couldn’t load more: {pages.error.message} <button className="btn btn--sm" onClick={() => loadMore?.()}>Retry</button></span>
+        ) : pages.loading ? (
+          <span className="more__busy"><span className="spinner spinner--xs" /> Loading more matches…</span>
+        ) : canGrow ? (
+          <button className="btn" onClick={() => grow.current()}>Show more</button>
+        ) : list.length > 0 ? (
+          <span className="more__end">That’s every match{active ? " that fits" : ""}.</span>
+        ) : null}
+      </div>
+    </>
   );
 }
 
@@ -127,8 +186,9 @@ function MatchCard({ m, i }: { m: MatchIndexEntry; i: number }) {
   const colors = distinctColors(m.agents);
   const winColor = m.winner !== null ? colors[m.winner] : null;
   const style = { "--i": Math.min(i, 16), "--win": winColor?.main ?? "#8b97a8", "--win-rgb": (winColor?.rgb ?? [139, 151, 168]).join(",") } as CSSProperties;
+  const tag = originTag(m.origin);
   return (
-    <a className={`card ${m.winner === null ? "is-draw" : ""}`} href={matchHref(m.runId, m.matchId)} style={style}>
+    <a className={`card ${m.winner === null ? "is-draw" : ""}`} href={poolMatchHref(m.matchId)} style={style}>
       <div className="card__map">
         <MapThumb map={m.map} seed={m.seed} colors={[colors[0].main, colors[1].main]} />
         <span className="card__mapname">{MAPS[m.map]?.name ?? m.map}</span>
@@ -152,11 +212,8 @@ function MatchCard({ m, i }: { m: MatchIndexEntry; i: number }) {
         })}
         <div className="card__meta">
           <span>{m.winner === null ? "Draw" : titleCase(m.reason)}</span>
-          <span>·</span>
-          <span>{conditionLabel(m.condition)}</span>
-          <span>·</span>
-          <span>seed {m.seed}</span>
-          <span className="card__run">{m.runId}</span>
+          {m.condition !== DEFAULT_PUBLIC_CONDITION && <><span>·</span><span className="card__cond">{conditionLabel(m.condition)}</span></>}
+          {tag && <span className="card__run prov" title={ORIGIN_NOTE}>{tag}</span>}
         </div>
         {m.highlights.length > 0 && (
           <div className="card__tags">
@@ -166,10 +223,6 @@ function MatchCard({ m, i }: { m: MatchIndexEntry; i: number }) {
       </div>
     </a>
   );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return <div className="stat"><div className="stat__v">{value}</div><div className="stat__l">{label}</div></div>;
 }
 
 function Select({ label, value, onChange, options, allLabel = "All", allValue = "all" }: {
@@ -185,21 +238,3 @@ function Select({ label, value, onChange, options, allLabel = "All", allValue = 
     </label>
   );
 }
-
-export function NoData({ error }: { error: Error }) {
-  const missing = error instanceof NotFound;
-  return (
-    <div className="page-state page-state--error">
-      <h2>{missing ? "No data yet" : "Couldn’t load data"}</h2>
-      {missing ? (
-        <p>
-          The viewer reads <code>public/data/index.json</code>. Export runs with <code>pnpm analyze</code> (add <code>--include-dev</code> for dev runs), or build dev
-          fixture data with <code>node src/viewer/dev/make-fixture.ts</code>.
-        </p>
-      ) : (
-        <p>{error.message}</p>
-      )}
-    </div>
-  );
-}
-

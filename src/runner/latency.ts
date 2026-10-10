@@ -14,18 +14,28 @@ export type LatencyMode =
 
 export const ERROR_MIN_MS = 200; // an errored decision costs at least this much game time
 
-export function makeLatencyFn(mode: LatencyMode, seed: number): (slot: 0 | 1, realMs: number, errored: boolean) => number {
+export type LatencyFn = {
+  (slot: 0 | 1, realMs: number, errored: boolean, preMs?: number): number;
+  /** resampled only: draw the game-time latency for a decision at the moment it is requested (known in advance). */
+  draw?: (slot: 0 | 1) => number;
+};
+
+export function makeLatencyFn(mode: LatencyMode, seed: number): LatencyFn {
   const r = rng(seed ^ 0x9e3779b9);
-  return (slot, realMs, errored) => {
+  const draw = (slot: 0 | 1): number => {
+    if (mode.mode !== "resampled") throw new Error("draw() is only for resampled latency");
+    const tr = mode.traces[slot];
+    return tr.length ? tr[Math.floor(r() * tr.length)] : 250;
+  };
+  const fn: LatencyFn = (slot, realMs, errored, preMs) => {
     let ms: number;
     if (mode.mode === "scaled") ms = realMs * mode.factor;
     else if (mode.mode === "fixed") ms = mode.ms;
-    else {
-      const tr = mode.traces[slot];
-      ms = tr.length ? tr[Math.floor(r() * tr.length)] : realMs;
-    }
+    else ms = preMs ?? draw(slot);
     return errored ? Math.max(ms, ERROR_MIN_MS) : ms;
   };
+  if (mode.mode === "resampled") fn.draw = draw;
+  return fn;
 }
 
 export const msToTicks = (ms: number) => Math.max(1, Math.ceil((ms * TICK_HZ) / 1000));

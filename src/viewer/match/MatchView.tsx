@@ -1,29 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { MatchIndexEntry } from "../../analysis/schema.ts";
 import { MAPS } from "../../sim/maps.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
-import { loadIndex, loadLog, NotFound, useAsync } from "../lib/data.ts";
-import { clock, conditionLabel } from "../lib/format.ts";
-import { matchHref, replaceHash, resultsHref } from "../lib/router.ts";
-import { distinctColors, isDevRun, shortLabel, type TeamColor } from "../lib/theme.ts";
+import { getMatchEntry } from "../lib/api.ts";
+import { loadLog, NotFound, useAsync } from "../lib/data.ts";
+import { clock, conditionLabel, ORIGIN_NOTE, originTag } from "../lib/format.ts";
+import { liveHref, MATCHES_HREF, matchHref, replaceHash, RESULTS_HREF } from "../lib/router.ts";
+import { distinctColors, shortLabel, type TeamColor } from "../lib/theme.ts";
 import { buildModel, type MatchModel } from "../replay/model.ts";
-import { Player, SPEEDS } from "../replay/player.ts";
+import { Player, SPEEDS, usePlayer } from "../replay/player.ts";
 import { BrainPanel } from "./BrainPanel.tsx";
 import { Scoreboard } from "./Scoreboard.tsx";
 import { jumpTarget, Timeline } from "./Timeline.tsx";
 
+/** `runId` only keeps older links stable: every match is looked up in the one pool by id. */
 type Props = { runId: string; matchId: string; t: number | null };
 
 export function MatchView({ runId, matchId, t }: Props) {
   const state = useAsync(async () => {
-    let file = `matches/${runId}/${matchId}.jsonl`;
+    // The entry is only for the provenance chip, so a failure there never blocks the replay.
+    const [recs, entry] = await Promise.all([loadLog(matchId), getMatchEntry(matchId).catch(() => null)]);
     try {
-      const idx = await loadIndex();
-      const e = idx.matches.find((m) => m.runId === runId && m.matchId === matchId);
-      if (e) file = e.file;
-    } catch { /* fall back to the conventional path */ }
-    const recs = await loadLog(file);
-    try {
-      return buildModel(recs);
+      return { model: buildModel(recs), entry };
     } catch (e) {
       const header = recs.find((r) => r.k === "header");
       const why = (e as Error).message;
@@ -33,28 +31,27 @@ export function MatchView({ runId, matchId, t }: Props) {
           : `Could not re-simulate this log: ${why}`,
       );
     }
-  }, [runId, matchId]);
+  }, [matchId]);
 
   if (state.status === "loading") return <div className="page-state"><div className="spinner" />Re-simulating match…</div>;
   if (state.status === "error") {
+    const missing = state.error instanceof NotFound;
     return (
       <div className="page-state page-state--error">
-        <h2>{state.error instanceof NotFound ? "Match not found" : "Can’t play this match"}</h2>
-        <p>{state.error instanceof NotFound ? `No log for ${runId} / ${matchId} in public/data.` : state.error.message}</p>
-        <a className="btn" href="#/">← Back to matches</a>
+        <h2>{missing ? "Match not found" : "Can’t play this match"}</h2>
+        <p>{missing ? "There’s no finished match with this id in the pool. It may still be running, or the link is mistyped." : state.error.message}</p>
+        <div className="page-state__actions">
+          {missing && <a className="btn btn--primary" href={liveHref(matchId)}>Try the live view</a>}
+          <a className="btn" href={MATCHES_HREF}>← Back to matches</a>
+        </div>
       </div>
     );
   }
-  return <MatchStage key={`${runId}/${matchId}`} model={state.data} runId={runId} matchId={matchId} t={t} />;
+  return <ReplayStage key={matchId} model={state.data.model} entry={state.data.entry} runId={runId} matchId={matchId} t={t} />;
 }
 
-function MatchStage({ model, runId, matchId, t }: { model: MatchModel; runId: string; matchId: string; t: number | null }) {
+function ReplayStage({ model, entry, runId, matchId, t }: { model: MatchModel; entry: MatchIndexEntry | null; runId: string; matchId: string; t: number | null }) {
   const [player] = useState(() => new Player(model.endTick, model.slowTicks));
-  const agents = model.header.agents;
-  const colors = useMemo(() => distinctColors(agents.map((a) => a.id)) as [TeamColor, TeamColor], [agents]);
-  const labels = useMemo(() => agents.map((a) => a.label) as [string, string], [agents]);
-  const tags = useMemo(() => agents.map((a) => shortLabel(a.id, a.label)) as [string, string], [agents]);
-  const [copied, setCopied] = useState(false);
 
   // Initial position: deep-link tick (paused) or autoplay from the start.
   useEffect(() => {
@@ -79,6 +76,37 @@ function MatchStage({ model, runId, matchId, t }: { model: MatchModel; runId: st
     return () => { off(); clearTimeout(timer); };
   }, [player, runId, matchId, model.endTick]);
 
+  return <MatchStage model={model} player={player} runId={runId} matchId={matchId} origin={entry?.origin} mode="replay" />;
+}
+
+export type StageProps = {
+  model: MatchModel;
+  player: Player;
+  runId: string;
+  matchId: string;
+  mode: "replay" | "live";
+  /** Where the match ran (pool entry origin), for the provenance chip. */
+  origin?: MatchIndexEntry["origin"];
+  /** Rendered over the arena (live: waiting states and the finale). */
+  arenaOverlay?: ReactNode;
+  /** Extra badges in the title bar. */
+  badges?: ReactNode;
+};
+
+export function useTeam(model: MatchModel) {
+  const agents = model.header.agents;
+  const colors = useMemo(() => distinctColors(agents.map((a) => a.id)) as [TeamColor, TeamColor], [agents]);
+  const labels = useMemo(() => agents.map((a) => a.label) as [string, string], [agents]);
+  const tags = useMemo(() => agents.map((a) => shortLabel(a.id, a.label)) as [string, string], [agents]);
+  return { colors, labels, tags };
+}
+
+export function MatchStage({ model, player, runId, matchId, mode, origin, arenaOverlay, badges }: StageProps) {
+  const { colors, labels, tags } = useTeam(model);
+  const [copied, setCopied] = useState(false);
+  const live = mode === "live";
+  const snap = usePlayer(player);
+
   // Keyboard shortcuts.
   useEffect(() => {
     const hz = model.header.tickHz;
@@ -96,10 +124,10 @@ function MatchStage({ model, runId, matchId, t }: { model: MatchModel; runId: st
       else if (k === "ArrowRight") player.seek(player.playhead + (e.shiftKey ? 5 : 1) * hz);
       else if (k === ",") player.step(-1);
       else if (k === ".") player.step(1);
-      else if (k === "ArrowUp") player.setSpeed(SPEEDS[Math.min(SPEEDS.length - 1, speedIdx + 1)]);
-      else if (k === "ArrowDown") player.setSpeed(SPEEDS[Math.max(0, speedIdx - 1)]);
+      else if (!player.isLive && k === "ArrowUp") player.setSpeed(SPEEDS[Math.min(SPEEDS.length - 1, speedIdx + 1)]);
+      else if (!player.isLive && k === "ArrowDown") player.setSpeed(SPEEDS[Math.max(0, speedIdx - 1)]);
       else if (k === "Home") player.seek(0);
-      else if (k === "End") player.seek(model.endTick);
+      else if (k === "End") { if (player.isLive) player.goLive(); else player.seek(model.endTick); }
       else if (k === "s" || k === "S") player.setSlowmo(!player.slowmo);
       else if (k === "g" || k === "G") player.setGhosts(!player.ghosts);
       else if (k === "[" || k === "]") {
@@ -115,15 +143,18 @@ function MatchStage({ model, runId, matchId, t }: { model: MatchModel; runId: st
   const h = model.header;
   const mapName = MAPS[h.map]?.name ?? h.map;
   const firstMismatch = model.mismatches[0];
+  const tag = originTag(origin);
   const copyLink = async () => {
-    const url = `${location.origin}${location.pathname}${matchHref(runId, matchId, Math.min(player.playhead, model.endTick))}`;
+    const url = live
+      ? `${location.origin}${location.pathname}${liveHref(matchId)}`
+      : `${location.origin}${location.pathname}${matchHref(runId, matchId, Math.min(player.playhead, model.endTick))}`;
     try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1400); } catch { /* clipboard unavailable */ }
   };
 
   return (
-    <div className="match">
+    <div className={`match ${live ? "match--live" : ""}`}>
       <div className="match__bar">
-        <a className="back" href="#/" aria-label="Back to matches">
+        <a className="back" href={live ? "#/" : MATCHES_HREF} aria-label={live ? "Back to home" : "Back to matches"}>
           <svg viewBox="0 0 16 16" aria-hidden><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </a>
         <div className="match__title">
@@ -136,10 +167,12 @@ function MatchStage({ model, runId, matchId, t }: { model: MatchModel; runId: st
             <span className="chip">{mapName}</span>
             <span className="chip">{conditionLabel(h.condition)}</span>
             <span className="chip">seed {h.seed}</span>
-            <a className="chip chip--link" href={resultsHref(runId)}>{runId}{isDevRun(runId) ? " · dev" : ""}</a>
+            {tag && <span className="chip chip--prov" title={ORIGIN_NOTE}>{tag}</span>}
+            <a className="chip chip--link" href={RESULTS_HREF}>pool results</a>
           </div>
         </div>
         <div className="match__badges">
+          {badges}
           {(model.mismatches.length > 0 || model.simVersion.stale) && (
             <span className="badge badge--warn" tabIndex={0}>
               <svg viewBox="0 0 16 16" aria-hidden><path d="M8 1.8 15 14H1z" fill="currentColor" /><path d="M8 6v3.6M8 11.6v.3" stroke="#1a1204" strokeWidth="1.6" strokeLinecap="round" /></svg>
@@ -153,19 +186,19 @@ function MatchStage({ model, runId, matchId, t }: { model: MatchModel; runId: st
             </span>
           )}
           <span className="badge" title="Simulation and protocol versions recorded in the log">{h.sim} · {h.protocol}</span>
-          <button className="btn btn--ghost btn--sm" onClick={copyLink}>{copied ? "Link copied" : "Copy link at time"}</button>
+          <button className="btn btn--ghost btn--sm" onClick={copyLink}>{copied ? "Link copied" : live ? "Copy live link" : "Copy link at time"}</button>
         </div>
       </div>
 
-      <Scoreboard model={model} player={player} colors={colors} labels={labels} />
+      <Scoreboard model={model} player={player} colors={colors} labels={labels} live={live} />
 
       <div className="match__main">
         <BrainPanel model={model} player={player} slot={0} color={colors[0]} />
-        <ArenaCanvas model={model} player={player} colors={colors} tags={tags} labels={labels} />
+        <ArenaCanvas model={model} player={player} colors={colors} tags={tags} labels={labels} endCard={!live} live={live && snap.live} overlay={arenaOverlay} />
         <BrainPanel model={model} player={player} slot={1} color={colors[1]} />
       </div>
 
-      <Timeline model={model} player={player} colors={colors} />
+      <Timeline model={model} player={player} colors={colors} live={live} />
     </div>
   );
 }

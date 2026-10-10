@@ -1,8 +1,8 @@
-import { memo, type CSSProperties } from "react";
+import { memo, useState, type CSSProperties } from "react";
 import type { DecisionRec } from "../../runner/log.ts";
 import { TURRET_LEVELS, TURRET_VALUES } from "../../protocol/v1.ts";
 import { DRIVE_CMDS } from "../../sim/types.ts";
-import { latestApplied, pendingAt, type MatchModel } from "../replay/model.ts";
+import { latestApplied, pendingView, type MatchModel, type PendingView } from "../replay/model.ts";
 import { usePlayer, type Player } from "../replay/player.ts";
 import { driveLabel, usd } from "../lib/format.ts";
 import type { TeamColor } from "../lib/theme.ts";
@@ -21,12 +21,18 @@ export function BrainPanel({ model, player, slot, color }: Props) {
   const snap = usePlayer(player);
   const list = model.decisions[slot];
   const d = latestApplied(list, snap.tick);
-  const pending = pendingAt(list, snap.tick);
+  const pending = pendingView(model, slot, snap.tick);
   const agent = model.header.agents.find((a) => a.slot === slot) ?? model.header.agents[slot];
   const hz = model.header.tickHz;
+  // Phones: the probability detail collapses so the arena stays the focus (the toggle is hidden on wider screens).
+  const [open, setOpen] = useState(false);
   return (
-    <aside className={`brain brain--${slot === 0 ? "left" : "right"}`} style={teamStyle(color)} aria-label={`${agent.label} decision panel`}>
+    <aside className={`brain brain--${slot === 0 ? "left" : "right"} ${open ? "" : "is-collapsed"}`} style={teamStyle(color)} aria-label={`${agent.label} decision panel`}>
       <header className="brain__head">
+        <button className="brain__toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+          {open ? "Less" : "Probabilities"}
+          <svg viewBox="0 0 12 12" aria-hidden><path d="M3 4.5 6 7.5l3-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </button>
         <div className="brain__kicker">
           <span className="brain__swatch" />
           {agent.kind === "model" ? "Decision model" : "Dev bot"} · slot {slot}
@@ -40,7 +46,7 @@ export function BrainPanel({ model, player, slot, color }: Props) {
   );
 }
 
-function PendingRow({ pending, tick, hz }: { pending: DecisionRec | null; tick: number; hz: number }) {
+function PendingRow({ pending, tick, hz }: { pending: PendingView | null; tick: number; hz: number }) {
   if (!pending) {
     return (
       <div className="brain__pending is-idle">
@@ -48,8 +54,8 @@ function PendingRow({ pending, tick, hz }: { pending: DecisionRec | null; tick: 
       </div>
     );
   }
-  const span = Math.max(1, pending.applyTick - pending.issueTick);
-  const done = Math.min(span, tick - pending.issueTick);
+  const span = pending.applyTick === null ? null : Math.max(1, pending.applyTick - pending.issueTick);
+  const done = span === null ? tick - pending.issueTick : Math.min(span, tick - pending.issueTick);
   return (
     <div className="brain__pending" title="The model is deciding based on the game state at its issue tick; the enemy ghost in the arena shows that state.">
       <span className="brain__pulse is-live" />
@@ -57,7 +63,7 @@ function PendingRow({ pending, tick, hz }: { pending: DecisionRec | null; tick: 
         Thinking · state is <b>{((tick - pending.issueTick) / hz).toFixed(2)} s</b> old
       </span>
       <span className="brain__ticks">
-        {done}/{span}
+        {span === null ? `${done} ticks` : `${done}/${span}`}
       </span>
     </div>
   );

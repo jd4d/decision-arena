@@ -3,7 +3,7 @@
 import { rayCircle, rayRect, wrapAngle, type Rect } from "../../sim/math.ts";
 import { ARENA_H, ARENA_W, MUZZLE_OFFSET, RELOAD_TICKS, SHELL_RADIUS, TANK_RADIUS, TICK_HZ } from "../../sim/tuning.ts";
 import type { SimEvent } from "../../sim/types.ts";
-import { pendingAt, type Frame, type MatchModel, type ShellSnap, type TankSnap } from "../replay/model.ts";
+import { pendingView, type Frame, type MatchModel, type PendingView, type ShellSnap, type TankSnap } from "../replay/model.ts";
 import { rgba, type TeamColor } from "../lib/theme.ts";
 
 export const MARGIN_M = 1.25;
@@ -461,7 +461,7 @@ export function drawScene(g: Ctx, view: View, sc: Scene, ph: number): void {
     }
   }
 
-  const pend = ([0, 1] as const).map((slot) => pendingAt(m.decisions[slot], i0));
+  const pend = ([0, 1] as const).map((slot) => pendingView(m, slot, i0));
 
   // Aim lines.
   for (const slot of [0, 1] as const) {
@@ -812,7 +812,7 @@ function layoutHuds(g: Ctx, view: View, sc: Scene, tanks: [TankSnap, TankSnap], 
   return out;
 }
 
-function drawHud(g: Ctx, sc: Scene, slot: 0 | 1, tk: TankSnap, pend: ReturnType<typeof pendingAt>, t: number, box: HudBox): void {
+function drawHud(g: Ctx, sc: Scene, slot: 0 | 1, tk: TankSnap, pend: PendingView | null, t: number, box: HudBox): void {
   const col = sc.colors[slot];
   const dead = tk.hp <= 0;
   const { x, y, w, h, tag } = box;
@@ -852,7 +852,23 @@ function drawHud(g: Ctx, sc: Scene, slot: 0 | 1, tk: TankSnap, pend: ReturnType<
   g.fillStyle = "rgba(255,255,255,0.08)";
   roundRect(g, bx, by, bw, bh, 2);
   g.fill();
-  if (pend) {
+  if (pend && pend.applyTick === null) {
+    // Live: the answer hasn't landed yet. Fill asymptotically and count the game time spent thinking.
+    const elapsedMs = ((t - pend.issueTick) / TICK_HZ) * 1000;
+    const frac = 1 - Math.exp(-elapsedMs / 380);
+    const pulse = 0.65 + 0.35 * Math.sin(t * 0.9);
+    g.fillStyle = rgba(col, 0.55 + 0.35 * pulse);
+    roundRect(g, bx, by, Math.max(2, bw * frac), bh, 2);
+    g.fill();
+    g.font = `600 10px ${MONO_FONT}`;
+    g.fillStyle = "#e6edf5";
+    const real = `${Math.round(elapsedMs)}`;
+    g.fillText(real, bx + bw + 6, by + 2);
+    const rw = g.measureText(real).width;
+    g.font = `500 9px ${MONO_FONT}`;
+    g.fillStyle = "rgba(170,185,205,0.7)";
+    g.fillText("ms · thinking", bx + bw + 8 + rw, by + 2);
+  } else if (pend && pend.applyTick !== null) {
     const span = Math.max(1, pend.applyTick - pend.issueTick);
     const frac = clamp01((t - pend.issueTick) / span);
     g.fillStyle = pend.error ? "#ff4d5e" : frac > 0.85 ? col.bright : col.main;

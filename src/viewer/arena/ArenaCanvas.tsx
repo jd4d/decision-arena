@@ -1,12 +1,23 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { MatchModel } from "../replay/model.ts";
 import { usePlayer, type Player } from "../replay/player.ts";
 import type { TeamColor } from "../lib/theme.ts";
 import { drawScene, makeView, renderStatic, VIEW_ASPECT, type View } from "./render.ts";
 
-type Props = { model: MatchModel; player: Player; colors: [TeamColor, TeamColor]; tags: [string, string]; labels: [string, string] };
+type Props = {
+  model: MatchModel;
+  player: Player;
+  colors: [TeamColor, TeamColor];
+  tags: [string, string];
+  labels: [string, string];
+  /** Show the built-in end-of-match card (replays). */
+  endCard?: boolean;
+  /** Live stream running: show the LIVE chip and a "models thinking" hint while waiting at the edge. */
+  live?: boolean;
+  overlay?: ReactNode;
+};
 
-export function ArenaCanvas({ model, player, colors, tags, labels }: Props) {
+export function ArenaCanvas({ model, player, colors, tags, labels, endCard = true, live = false, overlay }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const snap = usePlayer(player);
@@ -43,7 +54,14 @@ export function ArenaCanvas({ model, player, colors, tags, labels }: Props) {
   }, [model, player, colors, tags]);
 
   const end = model.endEvent;
-  const showEnd = snap.ended && !snap.playing;
+  const showEnd = endCard && snap.ended && !snap.playing;
+  // Waiting at the stream edge is normal (the engine pauses while models think); only say so if it lasts.
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    if (!live || !snap.starved) { setStalled(false); return; }
+    const t = setTimeout(() => setStalled(true), 900);
+    return () => clearTimeout(t);
+  }, [live, snap.starved]);
   return (
     <div className="arena" ref={wrapRef}>
       <div className={`arena__stage ${snap.slowActive && snap.playing ? "is-slow" : ""}`}>
@@ -51,6 +69,12 @@ export function ArenaCanvas({ model, player, colors, tags, labels }: Props) {
         <div className={`arena__chip arena__chip--slowmo ${snap.slowActive && snap.playing ? "is-on" : ""}`}>
           <span className="dot" /> Slow-mo
         </div>
+        {live && (
+          <div className="arena__live" aria-live="polite">
+            <span className="arena__live-pill"><span className="dot" />Live</span>
+            <span className={`arena__live-wait ${stalled ? "is-on" : ""}`}>Waiting for the models…</span>
+          </div>
+        )}
         {snap.ghosts && (
           <div className="arena__legend">
             <svg width="16" height="12" viewBox="0 0 16 12" aria-hidden><rect x="1" y="1" width="14" height="10" rx="3" fill="none" stroke="currentColor" strokeDasharray="2.5 2" /></svg>
@@ -71,12 +95,13 @@ export function ArenaCanvas({ model, player, colors, tags, labels }: Props) {
             </button>
           </div>
         )}
+        {overlay}
       </div>
     </div>
   );
 }
 
-function reasonText(r: string): string {
+export function reasonText(r: string): string {
   if (r === "destroyed") return "Tank destroyed";
   if (r === "mutual") return "Mutual destruction";
   if (r === "time") return "Time up";

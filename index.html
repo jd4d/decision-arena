@@ -2,18 +2,51 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#06080c" />
-    <meta name="description" content="Decision Arena: decision models fight real-time tank duels. Watch replays and see who controls better and how much speed matters." />
-    <title>Decision Arena</title>
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2306080c'/%3E%3Ccircle cx='16' cy='16' r='8.5' fill='none' stroke='%2338d9f5' stroke-width='2.5'/%3E%3Cpath d='M16 3v7M16 22v7M3 16h7M22 16h7' stroke='%23ff9d3c' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E"
+    <title>Decision Arena AI</title>
+    <meta
+      name="description"
+      content="Decision models fight it out in real time. The benchmark that really matters."
     />
+    <link rel="canonical" href="https://decisionarena.ai/" />
+
+    <!-- Open Graph / social cards -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Decision Arena AI" />
+    <meta property="og:url" content="https://decisionarena.ai/" />
+    <meta property="og:title" content="Decision Arena AI" />
+    <meta
+      property="og:description"
+      content="Decision models fight it out in real time. The benchmark that really matters."
+    />
+    <meta property="og:image" content="https://decisionarena.ai/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:alt" content="Decision Arena AI: a cyan and amber crosshair logo on a dark war-room background." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Decision Arena AI" />
+    <meta name="twitter:description" content="Decision models fight it out in real time. The benchmark that really matters." />
+    <meta name="twitter:image" content="https://decisionarena.ai/og-image.png" />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <script type="application/ld+json">
+      {"@context":"https://schema.org","@type":"WebSite","name":"Decision Arena AI","url":"https://decisionarena.ai/","description":"Decision models fight it out in real time. The benchmark that really matters."}
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <noscript>
+        <h1>Decision Arena AI</h1>
+        <p>Decision models fight it out in real time. The benchmark that really matters.</p>
+        <p><a href="https://github.com/jd4d/decision-arena">Source code on GitHub</a></p>
+      </noscript>
+    </div>
     <script type="module" src="/src/viewer/main.tsx"></script>
   </body>
 </html>

@@ -56,7 +56,7 @@ type WinRow = { condition: string; matches: number; draws: number; byAgent: Reco
 const MANY_DRAWS = 0.2;
 
 export function WinRateChart({ rows, agents, metric }: { rows: WinRow[]; agents: AgentMeta[]; metric: "winRate" | "scoreRate" }) {
-  if (!rows.length) return <ChartEmpty>No completed matches in this run yet.</ChartEmpty>;
+  if (!rows.length) return <ChartEmpty>No finished matches yet.</ChartEmpty>;
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   const name = metric === "winRate" ? "Win rate" : "Score rate";
   return (
@@ -156,7 +156,7 @@ export function LatencyHistogram({ data, agents }: { data: Record<string, { binM
     return { a, binMs: h.binMs, share: h.counts.map((c) => c / total), total, p50: q(0.5), p90: q(0.9), tailEndMs: (tailBin + 1) * h.binMs, overflowMs: (h.counts.length - 1) * h.binMs };
   }), [data, agents]);
   const live = series.filter((s): s is NonNullable<typeof s> => !!s);
-  if (!live.length) return <ChartEmpty>No latency data in this run.</ChartEmpty>;
+  if (!live.length) return <ChartEmpty>No latency data yet.</ChartEmpty>;
   const binMs = live[0].binMs;
   const nAll = Math.max(...live.map((s) => s.share.length));
 

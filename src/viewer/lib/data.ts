@@ -1,36 +1,36 @@
-// Everything the viewer reads lives under public/data/ (contract: src/analysis/schema.ts).
+// Match logs come from the API (`GET /api/matches/<id>/log`, contract: src/api/contract.ts), cached per page load.
 import { useEffect, useState } from "react";
-import type { DataIndex, RunSummary } from "../../analysis/schema.ts";
 import { parseLog, type LogRec } from "../../runner/log.ts";
+import { apiFetch } from "./api.ts";
 
-/** Optional marker written by src/viewer/dev/make-fixture.ts. */
-export type FixtureMark = { devFixture?: string };
-
-const BASE = `${import.meta.env.BASE_URL}data/`;
-const cache = new Map<string, Promise<unknown>>();
+const cache = new Map<string, Promise<LogRec[]>>();
 
 export class NotFound extends Error {}
 
-function get<T>(path: string, parse: (text: string) => T): Promise<T> {
-  let p = cache.get(path) as Promise<T> | undefined;
+export const logPath = (matchId: string) => `/api/matches/${encodeURIComponent(matchId)}/log`;
+
+/** A finished match's log, parsed. Rejects with NotFound when the pool has no finished match with this id. */
+export function loadLog(matchId: string): Promise<LogRec[]> {
+  let p = cache.get(matchId);
   if (!p) {
-    p = fetch(BASE + path).then(async (r) => {
-      if (r.status === 404) throw new NotFound(`${path} not found`);
-      if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+    p = apiFetch(logPath(matchId), { cache: "no-store" }).then(async (r) => {
+      if (r.status === 404) throw new NotFound(`${matchId} not found`);
+      if (!r.ok) throw new Error(`Match log: HTTP ${r.status}`);
       const text = await r.text();
-      // Vite's dev server answers unknown paths with index.html.
-      if (/^\s*<!doctype html/i.test(text)) throw new NotFound(`${path} not found`);
-      return parse(text);
+      // A dev server without the Worker answers unknown paths with index.html.
+      if (/^\s*<!doctype html/i.test(text)) throw new NotFound(`${matchId} not found`);
+      return parseLog(text) as LogRec[];
     });
-    p.catch(() => cache.delete(path));
-    cache.set(path, p);
+    p.catch(() => cache.delete(matchId));
+    cache.set(matchId, p);
   }
   return p;
 }
 
-export const loadIndex = () => get("index.json", (t) => JSON.parse(t) as DataIndex & FixtureMark);
-export const loadSummary = (file: string) => get(file, (t) => JSON.parse(t) as RunSummary & FixtureMark);
-export const loadLog = (file: string) => get(file, (t) => parseLog(t) as LogRec[]);
+/** Seed the log cache (a live view already holds every record, so "watch again" needs no download). */
+export function primeLog(matchId: string, recs: LogRec[]): void {
+  cache.set(matchId, Promise.resolve(recs));
+}
 
 export type Async<T> = { status: "loading" } | { status: "ready"; data: T } | { status: "error"; error: Error };
 

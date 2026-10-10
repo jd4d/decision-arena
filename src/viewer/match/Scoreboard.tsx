@@ -4,9 +4,9 @@ import { clock, conditionLabel } from "../lib/format.ts";
 import type { TeamColor } from "../lib/theme.ts";
 import { teamStyle } from "./BrainPanel.tsx";
 
-type Props = { model: MatchModel; player: Player; colors: [TeamColor, TeamColor]; labels: [string, string] };
+type Props = { model: MatchModel; player: Player; colors: [TeamColor, TeamColor]; labels: [string, string]; live?: boolean };
 
-export function Scoreboard({ model, player, colors, labels }: Props) {
+export function Scoreboard({ model, player, colors, labels, live = false }: Props) {
   const snap = usePlayer(player);
   const tick = snap.tick;
   const hz = model.header.tickHz;
@@ -53,7 +53,7 @@ export function Scoreboard({ model, player, colors, labels }: Props) {
       <div className="score__clock">
         <div className="score__time">{clock(remaining)}</div>
         <div className="score__cond">
-          <span className={`score__live ${snap.playing ? "is-on" : ""}`} /> Replay · {conditionLabel(model.header.condition)}
+          <span className={`score__live ${snap.playing ? "is-on" : ""}`} /> {live ? (snap.live ? "Live" : "Final") : "Replay"} · {conditionLabel(model.header.condition)}
         </div>
       </div>
       {side(1)}
