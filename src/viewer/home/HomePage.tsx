@@ -8,7 +8,7 @@ import { loadLog, useAsync } from "../lib/data.ts";
 import { FEATURE_BUCKET_MS, FEATURE_POOL, featureBucket, pickFeatured } from "../lib/featured.ts";
 import { compareConditions, conditionLabel, mmss, ms, ORIGIN_NOTE, originTag, pct, reasonLabel } from "../lib/format.ts";
 import { MATCHES_HREF, poolMatchHref, RESULTS_HREF } from "../lib/router.ts";
-import { agentRecord, poolStory, shortName, totalMatches } from "../lib/summary.ts";
+import { agentRecord, leader, poolStory, shortName, totalMatches } from "../lib/summary.ts";
 import { canonicalOrder, distinctColors, shortLabel, type TeamColor } from "../lib/theme.ts";
 import { teamStyle } from "../match/BrainPanel.tsx";
 import { buildModel, type MatchModel } from "../replay/model.ts";
@@ -224,12 +224,11 @@ function PoolBoard() {
   const story = poolStory(s, agents);
   const REAL = DEFAULT_PUBLIC_CONDITION;
   const hasReal = totalMatches(s, REAL) > 0;
-  const lead = story.real;
-  const headline = !hasReal
-    ? "No real-latency matches yet"
-    : !lead || (!lead.clear && lead.rate.p - 0.5 < EVEN)
-      ? "Too close to call at real latency"
-      : `${shortName(lead.label)} ${lead.clear ? "wins" : "edges ahead"} at real latency`;
+  // The big scoreboard pools every match in the pool, across all latency rules (wins ÷ decisive matches).
+  const lead = leader(s, agents);
+  const headline = !lead || (!lead.clear && lead.rate.p - 0.5 < EVEN)
+    ? "Dead even across every match"
+    : `${shortName(lead.label)} ${lead.clear ? "leads" : "edges ahead"} across every match`;
   const control = story.control;
   const ctl = story.decisions;
   const facts: string[] = [];
@@ -257,17 +256,19 @@ function PoolBoard() {
       </header>
       <div className="board__grid">
         {agents.map((a, i) => {
-          const r = agentRecord(s, a.id, REAL);
+          const r = agentRecord(s, a.id);
+          const real = hasReal ? agentRecord(s, a.id, REAL).winRate : null;
           const eq = control ? agentRecord(s, a.id, control).winRate : null;
           return (
             <div key={a.id} className="board__agent" style={{ ...teamStyle(colors[i]), "--i": i } as CSSProperties}>
               <div className="board__name">{a.label}</div>
-              <div className="board__big">{r.winRate ? pct(r.winRate.p) : "—"}<small>real latency</small></div>
+              <div className="board__big">{r.winRate ? pct(r.winRate.p) : "—"}<small>all matches</small></div>
               <div className="board__ci">{r.winRate ? `95% CI ${pct(r.winRate.lo)}–${pct(r.winRate.hi)}` : "no decisive matches"}</div>
               <dl>
                 <div><dt>Record</dt><dd>{r.wins}–{r.losses}–{r.draws}</dd></div>
-                <div><dt>Median</dt><dd>{ms(story.p50[a.id])}</dd></div>
+                <div><dt>Real latency</dt><dd>{real ? pct(real.p) : "—"}</dd></div>
                 {control && <div><dt>Equal latency</dt><dd>{eq ? pct(eq.p) : "—"}</dd></div>}
+                <div><dt>Median</dt><dd>{ms(story.p50[a.id])}</dd></div>
               </dl>
             </div>
           );
