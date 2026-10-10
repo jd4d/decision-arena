@@ -9,7 +9,7 @@ import { rgba, type TeamColor } from "../lib/theme.ts";
 export const MARGIN_M = 1.25;
 export const VIEW_ASPECT = (ARENA_W + 2 * MARGIN_M) / (ARENA_H + 2 * MARGIN_M);
 
-const UI_FONT = `Inter, "SF Pro Text", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`;
+const UI_FONT = `"Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`;
 const MONO_FONT = `"JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace`;
 
 export type View = { w: number; h: number; dpr: number; s: number; ox: number; oy: number };

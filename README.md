@@ -54,3 +54,8 @@ One-time setup on the Cloudflare account (the D1 id is already in `wrangler.json
 10. Verify: open `https://decisionarena.ai/api/status`, then `pnpm live:smoke --base https://decisionarena.ai`.
 
 Later deploys are step 8 (if the benchmark changed) and step 9. A deploy restarts Durable Objects and drops matches in progress, so deploy when `/api/status` shows `liveMatches: 0`. `MAX_CONCURRENT`, `MAX_QUEUE` and `BUDGET_USD` are `vars` in `wrangler.jsonc`.
+
+## License
+
+Code: [MIT](LICENSE) © 2026 Simplify Studios LLC. The bundled Inter typeface is under the SIL Open Font License 1.1 (via `@fontsource-variable/inter`).
+Jev, TypeSafe, Microsoft and OpenRouter are trademarks of their respective owners. This project is independent and not affiliated with or endorsed by them.

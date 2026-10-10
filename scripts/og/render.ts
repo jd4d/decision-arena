@@ -9,6 +9,9 @@ const root = resolve(import.meta.dirname, "../..");
 const browser = await chromium.launch({ executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
 const page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
 await page.goto(pathToFileURL(resolve(root, "scripts/og/og.html")).href);
+await page.evaluate(() => document.fonts.ready);
+const fontOk = await page.evaluate(() => document.fonts.check('800 68px "Inter Variable"'));
+if (!fontOk) throw new Error("Inter Variable did not load; refusing to render with a fallback font");
 await page.screenshot({ path: resolve(root, "public/og-image.png"), clip: { x: 0, y: 0, width: 1200, height: 630 } });
 const svg = (await import("node:fs")).readFileSync(resolve(root, "public/favicon.svg"), "utf8");
 for (const [name, size, pad] of [["favicon-32.png", 32, 0], ["apple-touch-icon.png", 180, 1]] as const) {
