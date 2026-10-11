@@ -17,7 +17,7 @@ const RULES = Object.keys(PUBLIC_CONDITIONS) as PublicCondition[];
 export function RunPage() {
   const { status } = useStatus();
   const [map, setMap] = useState<string>("random");
-  const [rule, setRule] = useState<RuleChoice>(DEFAULT_PUBLIC_CONDITION);
+  const [rule, setRule] = useState<RuleChoice>("random");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiFailure | null>(null);
   const pool = useAsync(() => getCommunitySummary().catch(() => null), []);
@@ -94,7 +94,7 @@ export function RunPage() {
         <h2 id="step-rule">Pick a latency rule</h2>
         <RuleCards rule={rule} onChange={setRule} medians={medians} />
         <p className="step__note">
-          <b>Real latency</b> is the arena as intended: the game keeps running while a model thinks, so a slower model reacts to an older picture of the battlefield.
+          By default the arena picks one of the six rules at random. <b>Real latency</b> is the arena as intended: the game keeps running while a model thinks, so a slower model reacts to an older picture of the battlefield.
           The other rules are the experiments behind the results, separating decision quality from speed.
           {medians && <> Typical medians: {medians.map((m) => `${m.label} ${ms(m.p50)}`).join(", ")}.</>}
         </p>
@@ -139,7 +139,7 @@ function ruleDelays(c: PublicCondition, medians: Medians): number[] {
   return real.map((x) => x * Number(v));
 }
 
-/** First-class latency-rule choice, styled like the map cards: Random plus the six rules (real latency preselected). */
+/** First-class latency-rule choice, styled like the map cards: Random (preselected) plus the six rules. */
 function RuleCards({ rule, onChange, medians }: { rule: RuleChoice; onChange: (r: RuleChoice) => void; medians: Medians }) {
   const max = 1200;
   const names = medians?.map((m) => m.label) ?? ["Jev", "Microsoft"];
@@ -164,7 +164,7 @@ function RuleCards({ rule, onChange, medians }: { rule: RuleChoice; onChange: (r
                 ))}
               </span>
             )}
-            {c === DEFAULT_PUBLIC_CONDITION && <span className="ruleviz__badge">default</span>}
+            {c === "random" && <span className="ruleviz__badge">default</span>}
           </span>
           <span className="mapopt__name">{c === "random" ? "Random" : PUBLIC_CONDITIONS[c].label}</span>
           <span className="mapopt__sub">{c === "random" ? "Let the arena pick a rule" : PUBLIC_CONDITIONS[c].blurb}</span>

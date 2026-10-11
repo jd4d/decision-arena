@@ -51,7 +51,7 @@ export function HomePage() {
       <section className="how" aria-labelledby="how-h">
         <h2 id="how-h" className="sr-only">How it works</h2>
         {[
-          ["Pick", "Choose a map. Real latency is the default; other latency rules are optional. Sides and seed are drawn at random."],
+          ["Pick", "Choose a map and a latency rule, or leave both on Random. Sides and seed are drawn at random."],
           ["Watch", "Both models decide in real time. Ghosts show the enemy as each model last saw it."],
           ["Compare", "Your match joins the pool. See how it moved the win rates."],
         ].map(([t, d], i) => (

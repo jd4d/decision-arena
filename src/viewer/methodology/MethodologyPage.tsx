@@ -150,8 +150,9 @@ export function MethodologyPage({ section }: { section: string | null }) {
 
         <Section id="conditions" title="Latency rules">
           <p>
-            <b>Real latency is the default</b>, and a visitor never has to change it: each model’s measured response time becomes game time. The other five rules
-            are the experiments behind the results. They separate decision quality from speed, and anyone can pick one under “Latency rule” when starting a match.
+            <b>Real latency</b> is the arena as intended: each model’s measured response time becomes game time. The other five rules
+            are the experiments behind the results. They separate decision quality from speed. When starting a match you can pick a rule, or leave it on
+            Random (the default), which draws one of the six with equal odds.
           </p>
           <div className="condlist">
             {(Object.keys(PUBLIC_CONDITIONS) as PublicCondition[]).map((c) => (
