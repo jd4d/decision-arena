@@ -93,11 +93,6 @@ export function RunPage() {
       <section className="step" aria-labelledby="step-rule">
         <h2 id="step-rule">Pick a latency rule</h2>
         <RuleCards rule={rule} onChange={setRule} medians={medians} />
-        <p className="step__note">
-          By default the arena picks one of the six rules at random. <b>Real latency</b> is the arena as intended: the game keeps running while a model thinks, so a slower model reacts to an older picture of the battlefield.
-          The other rules are the experiments behind the results, separating decision quality from speed.
-          {medians && <> Typical medians: {medians.map((m) => `${m.label} ${ms(m.p50)}`).join(", ")}.</>}
-        </p>
       </section>
 
       <section className="go" aria-label="Start">
