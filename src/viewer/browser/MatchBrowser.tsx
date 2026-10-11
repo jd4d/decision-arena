@@ -28,7 +28,7 @@ function loadFilters(): Filters {
 type Pages = { matches: MatchIndexEntry[]; next: string | null; loading: boolean; error: ApiFailure | null; started: boolean };
 
 export function MatchBrowser() {
-  const { status } = useStatus(30_000);
+  const { status } = useStatus();
   const [pages, setPages] = useState<Pages>({ matches: [], next: null, loading: true, error: null, started: false });
   const busy = useRef(false);
   const load = useCallback(async (cursor: string | null) => {

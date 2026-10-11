@@ -15,9 +15,9 @@ import { StatusStrip } from "../home/StatusStrip.tsx";
 const RULES = Object.keys(PUBLIC_CONDITIONS) as PublicCondition[];
 
 export function RunPage() {
-  const { status } = useStatus(8000);
+  const { status } = useStatus();
   const [map, setMap] = useState<string>("random");
-  const [rule, setRule] = useState<PublicCondition>(DEFAULT_PUBLIC_CONDITION);
+  const [rule, setRule] = useState<RuleChoice>(DEFAULT_PUBLIC_CONDITION);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiFailure | null>(null);
   const pool = useAsync(() => getCommunitySummary().catch(() => null), []);
@@ -29,7 +29,7 @@ export function RunPage() {
     return rows.length && rows.every((r) => Number.isFinite(r.p50)) ? rows : null;
   }, [summary]);
   const matchCost = useMemo(() => {
-    const per = (summary?.agents ?? []).map((a) => agentRecord(summary, a.id, rule).costPerMatch);
+    const per = (summary?.agents ?? []).map((a) => agentRecord(summary, a.id, rule === "random" ? undefined : rule).costPerMatch);
     return per.length && per.every(Number.isFinite) ? per.reduce((t, x) => t + x, 0) : null;
   }, [summary, rule]);
 
@@ -42,9 +42,10 @@ export function RunPage() {
     // Snapshot the pool results first, so the end screen can show how this match moved them.
     const beforeP = getCommunitySummary().catch(() => null);
     try {
-      const res = await createMatch({ map, condition: rule });
+      const condition = rule === "random" ? RULES[Math.floor(Math.random() * RULES.length)] : rule;
+      const res = await createMatch({ map, condition });
       const before = await Promise.race([beforeP, new Promise<null>((r) => setTimeout(() => r(null), 2500))]);
-      saveLaunch(res.matchId, { liveUrl: res.liveUrl, queuePosition: res.queuePosition, map, condition: rule, createdAt: Date.now(), before });
+      saveLaunch(res.matchId, { liveUrl: res.liveUrl, queuePosition: res.queuePosition, map, condition, createdAt: Date.now(), before });
       location.hash = liveHref(res.matchId);
     } catch (e) {
       setErr(e instanceof ApiFailure ? e : new ApiFailure("network", (e as Error).message));
@@ -89,15 +90,15 @@ export function RunPage() {
         </div>
       </section>
 
-      <aside className="realnote" aria-label="How latency works">
-        <svg viewBox="0 0 24 24" aria-hidden><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth="1.7" /><path d="M12 7v5.2l3.3 2" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        <p>
-          <b>Real response time is part of the fight.</b> The game keeps running while a model thinks, so a slower model reacts to an older picture of the battlefield.
+      <section className="step" aria-labelledby="step-rule">
+        <h2 id="step-rule">Pick a latency rule</h2>
+        <RuleCards rule={rule} onChange={setRule} medians={medians} />
+        <p className="step__note">
+          <b>Real latency</b> is the arena as intended: the game keeps running while a model thinks, so a slower model reacts to an older picture of the battlefield.
+          The other rules are the experiments behind the results, separating decision quality from speed.
           {medians && <> Typical medians: {medians.map((m) => `${m.label} ${ms(m.p50)}`).join(", ")}.</>}
         </p>
-      </aside>
-
-      <RulePicker rule={rule} onChange={setRule} />
+      </section>
 
       <section className="go" aria-label="Start">
         <div className="go__sides">
@@ -110,7 +111,7 @@ export function RunPage() {
           <div className="go__summary">
             <span>{map === "random" ? "Random map" : MAPS[map].name}</span>
             <span className="go__dot">·</span>
-            <span>{conditionLabel(rule)}</span>
+            <span>{rule === "random" ? "Random latency rule" : conditionLabel(rule)}</span>
           </div>
           <button className={`btn btn--cta ${busy ? "is-busy" : ""}`} onClick={start} disabled={busy || outOfFuel} aria-busy={busy}>
             {busy ? <><span className="spinner spinner--xs" /> Starting…</> : <>Start match <span aria-hidden>→</span></>}
@@ -125,38 +126,52 @@ export function RunPage() {
   );
 }
 
-/** Compact, optional latency-rule choice. Real latency is preselected, so a visitor never has to open it. */
-function RulePicker({ rule, onChange }: { rule: PublicCondition; onChange: (r: PublicCondition) => void }) {
-  const [open, setOpen] = useState(false);
-  const changed = rule !== DEFAULT_PUBLIC_CONDITION;
+type RuleChoice = PublicCondition | "random";
+type Medians = { label: string; p50: number }[] | null;
+
+/** Game-time delay per decision for each model under a rule, from the pool's real-latency medians. */
+function ruleDelays(c: PublicCondition, medians: Medians): number[] {
+  const real = medians?.map((m) => m.p50) ?? [200, 280];
+  const spec = PUBLIC_CONDITIONS[c].latency;
+  const [kind, v] = spec.split(":");
+  if (kind === "fixed") return real.map(() => Number(v));
+  if (kind === "swap") return [...real].reverse().map((x) => x * Number(v));
+  return real.map((x) => x * Number(v));
+}
+
+/** First-class latency-rule choice, styled like the map cards: Random plus the six rules (real latency preselected). */
+function RuleCards({ rule, onChange, medians }: { rule: RuleChoice; onChange: (r: RuleChoice) => void; medians: Medians }) {
+  const max = 1200;
+  const names = medians?.map((m) => m.label) ?? ["Jev", "Microsoft"];
   return (
-    <details className={`rule ${changed ? "is-changed" : ""}`} open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary className="rule__sum">
-        <span className="rule__k">Latency rule</span>
-        <b className="rule__v">{PUBLIC_CONDITIONS[rule].label}</b>
-        <span className="rule__tag">{changed ? "changed" : "default"}</span>
-        <svg className="rule__chev" viewBox="0 0 16 16" aria-hidden><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        {changed && !open && <span className="rule__blurb">{PUBLIC_CONDITIONS[rule].blurb}</span>}
-      </summary>
-      <div className="rule__panel">
-        <p className="rule__intro">
-          Optional. Real latency is the arena as intended; the other rules are the experiments behind the results, separating decision quality from speed.
-        </p>
-        <div className="rule__opts" role="radiogroup" aria-label="Latency rule">
-          {RULES.map((c) => (
-            <label key={c} className={`ruleopt ${rule === c ? "is-on" : ""}`}>
-              <input type="radio" name="rule" value={c} checked={rule === c} onChange={() => onChange(c)} className="sr-only" />
-              <span className="ruleopt__dot" aria-hidden />
-              <span className="ruleopt__name">
-                {PUBLIC_CONDITIONS[c].label}
-                {c === DEFAULT_PUBLIC_CONDITION && <em>default</em>}
+    <div className="mapopts ruleopts" role="radiogroup" aria-labelledby="step-rule">
+      {(["random", ...RULES] as RuleChoice[]).map((c, i) => (
+        <label key={c} className={`mapopt ${rule === c ? "is-on" : ""}`} style={{ "--i": i } as CSSProperties}>
+          <input type="radio" name="rule" value={c} checked={rule === c} onChange={() => onChange(c)} className="sr-only" />
+          <span className="mapopt__thumb ruleviz">
+            {c === "random" ? (
+              <span className="mapopt__dice" aria-hidden>
+                <svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="4" fill="none" stroke="currentColor" strokeWidth="1.6" /><circle cx="8.5" cy="8.5" r="1.4" /><circle cx="15.5" cy="15.5" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="15.5" cy="8.5" r="1.4" /><circle cx="8.5" cy="15.5" r="1.4" /></svg>
               </span>
-              <span className="ruleopt__blurb">{PUBLIC_CONDITIONS[c].blurb}</span>
-            </label>
-          ))}
-        </div>
-      </div>
-    </details>
+            ) : (
+              <span className="ruleviz__bars" aria-label={`Delay per decision: ${ruleDelays(c, medians).map((d, k) => `${names[k]} ${Math.round(d)} ms`).join(", ")}`}>
+                {ruleDelays(c, medians).map((d, k) => (
+                  <span key={k} className={`ruleviz__row ruleviz__row--${k}`}>
+                    <span className="ruleviz__who">{names[k]}</span>
+                    <span className="ruleviz__track"><span className="ruleviz__fill" style={{ width: `${Math.min(100, (d / max) * 100)}%` }} /></span>
+                    <span className="ruleviz__ms">{Math.round(d)} ms</span>
+                  </span>
+                ))}
+              </span>
+            )}
+            {c === DEFAULT_PUBLIC_CONDITION && <span className="ruleviz__badge">default</span>}
+          </span>
+          <span className="mapopt__name">{c === "random" ? "Random" : PUBLIC_CONDITIONS[c].label}</span>
+          <span className="mapopt__sub">{c === "random" ? "Let the arena pick a rule" : PUBLIC_CONDITIONS[c].blurb}</span>
+          <span className="mapopt__check" aria-hidden />
+        </label>
+      ))}
+    </div>
   );
 }
 

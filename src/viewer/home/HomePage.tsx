@@ -18,7 +18,7 @@ import { StatusStrip } from "./StatusStrip.tsx";
 export const REPO_URL = "https://github.com/jd4d/decision-arena";
 
 export function HomePage() {
-  const { status } = useStatus(10_000);
+  const { status } = useStatus();
   const fuel = status ? status.acceptingMatches : true;
   return (
     <div className="home">

@@ -132,28 +132,15 @@ export function closeSocket(s: SocketLike, code = 1000, reason = ""): void {
   else s.close(code, reason);
 }
 
-/** Poll /api/status while the page is visible. */
-export function useStatus(pollMs = 10_000): { status: StatusResponse | null; error: ApiFailure | null } {
+/** Load /api/status once when the page opens (no polling: it refreshes on reload or navigation). */
+export function useStatus(): { status: StatusResponse | null; error: ApiFailure | null } {
   const [state, setState] = useState<{ status: StatusResponse | null; error: ApiFailure | null }>({ status: null, error: null });
   useEffect(() => {
     let live = true;
-    let timer = 0;
-    const tick = async () => {
-      clearTimeout(timer);
-      if (document.visibilityState === "visible") {
-        try {
-          const s = await getStatus();
-          if (live) setState({ status: s, error: null });
-        } catch (e) {
-          if (live) setState((o) => ({ status: o.status, error: e as ApiFailure }));
-        }
-      }
-      if (live) timer = window.setTimeout(tick, pollMs);
-    };
-    tick();
-    const onVis = () => { if (document.visibilityState === "visible") tick(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => { live = false; clearTimeout(timer); document.removeEventListener("visibilitychange", onVis); };
-  }, [pollMs]);
+    getStatus()
+      .then((s) => { if (live) setState({ status: s, error: null }); })
+      .catch((e) => { if (live) setState((o) => ({ status: o.status, error: e as ApiFailure })); });
+    return () => { live = false; };
+  }, []);
   return state;
 }

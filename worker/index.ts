@@ -44,13 +44,29 @@ async function createMatch(req: Request, env: Env): Promise<Response> {
   return json({ matchId: spec.matchId, liveUrl: `/api/matches/${spec.matchId}/live`, queuePosition: r.position } satisfies CreateMatchResponse, 201);
 }
 
+/** Status changes slowly and every page load asks for it once: serve it from the edge cache for a few seconds so a
+ *  traffic spike reaches the singleton Lobby at most once per data centre per STATUS_TTL_S. (No-op on workers.dev.) */
+const STATUS_TTL_S = 5;
+async function cachedStatus(req: Request, env: Env): Promise<Response> {
+  const key = new Request(new URL("/api/status", req.url).toString(), { method: "GET" });
+  const cache = (caches as unknown as { default: Cache }).default;
+  // The edge copy lives STATUS_TTL_S; browsers always get no-store (the zone's Browser Cache TTL would otherwise
+  // stretch a cached response's max-age to hours).
+  const toClient = (r: Response) => new Response(r.body, { status: r.status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } });
+  const hit = await cache.match(key);
+  if (hit) return toClient(hit);
+  const res = json(await lobbyStub(env).status(), 200, { "Cache-Control": `public, max-age=${STATUS_TTL_S}` });
+  await cache.put(key, res.clone());
+  return toClient(res);
+}
+
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const parts = url.pathname.replace(/\/+$/, "").split("/").slice(2); // after "/api"
   const method = req.method;
   const only = (m: string) => (method === m || (m === "GET" && method === "HEAD") ? null : fail(405, "bad_request", `Use ${m}.`));
 
-  if (parts[0] === "status" && parts.length === 1) return only("GET") ?? json(await lobbyStub(env).status());
+  if (parts[0] === "status" && parts.length === 1) return only("GET") ?? (await cachedStatus(req, env));
 
   if (parts[0] === "summary" && parts[1] === "community" && parts.length === 2) {
     const bad = only("GET");

@@ -2344,3 +2344,24 @@ button.golive .golive__dot { animation: none; background: rgba(255, 77, 94, 0.7)
 .realnote svg { flex: none; width: 22px; height: 22px; margin-top: 1px; color: var(--accent); }
 .realnote p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; max-width: 74ch; }
 .realnote b { color: var(--text); }
+
+/* Latency-rule cards (reuse .mapopt; the thumb shows each model's game-time delay per decision). */
+.ruleviz { display: grid; place-items: center; background: radial-gradient(120% 90% at 50% 0%, rgba(140, 200, 255, 0.06), transparent 60%), #070b11; }
+.ruleviz__bars { display: grid; gap: 9px; width: 84%; }
+.ruleviz__row { display: grid; grid-template-columns: 62px 1fr 52px; align-items: center; gap: 8px; font: 600 10.5px var(--mono); color: var(--muted); }
+.ruleviz__who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ruleviz__ms { text-align: right; color: var(--text); }
+.ruleviz__track { height: 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.06); overflow: hidden; }
+.ruleviz__fill { display: block; height: 100%; border-radius: 4px; transition: width 0.6s var(--ease); }
+.ruleviz__row--0 .ruleviz__fill { background: linear-gradient(90deg, #3fd2ff, #8eeaff); }
+.ruleviz__row--1 .ruleviz__fill { background: linear-gradient(90deg, #ff9b3d, #ffd0a0); }
+.ruleviz__badge { position: absolute; left: 8px; top: 8px; font: 600 10px var(--mono); color: var(--dim); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-2); background: rgba(6, 8, 12, 0.7); }
+.ruleopts .mapopt__thumb { aspect-ratio: 32 / 15; }
+@media (max-width: 700px) {
+  .ruleopts .mapopt__thumb { aspect-ratio: auto; padding: 30px 10px 12px; }
+  .ruleviz__bars { width: 100%; gap: 8px; }
+  .ruleviz__row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 4px; }
+  .ruleviz__track { grid-column: 1 / -1; order: 2; }
+  .ruleviz__ms { order: 1; }
+  .ruleopts .mapopt__dice svg { width: 44px; }
+}
