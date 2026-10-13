@@ -58,6 +58,9 @@ async function create(): Promise<CreateMatchResponse> {
 }
 
 const before = await getJson<StatusResponse>("/api/status");
+// The summary only covers the current sim/protocol version, while status counts every done match, so compare summary to summary.
+const summaryTotal = (s: RunSummary) => s.conditions.reduce((a, c) => a + c.matches, 0);
+const summaryBefore = summaryTotal(await getJson<RunSummary>("/api/summary/community"));
 console.log("status before:", JSON.stringify(before));
 const created: CreateMatchResponse[] = [];
 for (let i = 0; i < n; i++) created.push(await create());
@@ -95,11 +98,11 @@ for (const w of results) {
 const list = await getJson<MatchListResponse>("/api/matches?limit=5");
 console.log(`\nlist (newest first): ${list.matches.map((m) => m.matchId).join(", ")}  nextCursor=${list.nextCursor ? "yes" : "null"}`);
 const sum = await getJson<RunSummary>("/api/summary/community");
-const total = sum.conditions.reduce((a, c) => a + c.matches, 0);
+const total = summaryTotal(sum);
 console.log(`summary: ${total} matches, $${sum.totalCostUsd.toFixed(4)}, conditions ${sum.conditions.map((c) => `${c.condition}:${c.matches}`).join(" ")}`);
 const after = await getJson<StatusResponse>("/api/status");
 console.log("status after:", JSON.stringify(after));
 const finished = results.filter((w) => w.done).length;
-check(total >= before.communityMatches + finished || total === after.communityMatches, "summary includes the new matches");
+check(total >= summaryBefore + finished, "summary includes the new matches");
 console.log(ok ? "\nSMOKE OK" : "\nSMOKE FAILED");
 process.exit(ok ? 0 : 1);

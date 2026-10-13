@@ -4,7 +4,7 @@
 // builds drop it entirely and always talk to the real API.
 import { useEffect, useState } from "react";
 import type {
-  ApiError, CommunitySummaryResponse, CreateMatchRequest, CreateMatchResponse, MatchIndexEntry, MatchListResponse, StatusResponse,
+  ApiError, CommunitySummaryResponse, VersionsResponse, CreateMatchRequest, CreateMatchResponse, MatchIndexEntry, MatchListResponse, StatusResponse,
 } from "../../api/contract.ts";
 
 /** The subset of WebSocket the live view uses (the dev mock implements the same shape). */
@@ -109,12 +109,15 @@ export const getStatus = () => call<StatusResponse>("/api/status");
 export const createMatch = (req: CreateMatchRequest) =>
   call<CreateMatchResponse>("/api/matches", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
 
-export const listMatches = (cursor: string | null, limit = 50) =>
-  call<MatchListResponse>(`/api/matches?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+export const listMatches = (cursor: string | null, limit = 50, version?: string) =>
+  call<MatchListResponse>(`/api/matches?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${version ? `&version=${encodeURIComponent(version)}` : ""}`);
 
 export const getMatchEntry = (id: string) => call<MatchIndexEntry>(`/api/matches/${encodeURIComponent(id)}`);
 
-export const getCommunitySummary = () => call<CommunitySummaryResponse>("/api/summary/community");
+export const getCommunitySummary = (version?: string) =>
+  call<CommunitySummaryResponse>(`/api/summary/community${version ? `?version=${encodeURIComponent(version)}` : ""}`);
+
+export const getVersions = () => call<VersionsResponse>("/api/summary/versions");
 
 /** Contract path of a match's live socket (used when the create response isn't at hand, e.g. a shared link). */
 export const liveUrlFor = (id: string) => `/api/matches/${encodeURIComponent(id)}/live`;

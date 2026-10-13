@@ -78,64 +78,8 @@ export function withMatch(s: RunSummary, e: MatchIndexEntry): RunSummary {
   return out;
 }
 
-// ---------------------------------------------------------------- the pool's story in a sentence
+// ---------------------------------------------------------------- labels
 
 /** "Jev 1.13" -> "Jev", "Microsoft Decision 1" -> "Microsoft". */
 export const shortName = (label: string) => label.trim().split(/\s+/)[0] || label;
 
-/** Median-latency gap (ms) below which neither model is called faster. */
-const SPEED_GAP_MS = 20;
-
-export type Lead = { id: string; label: string; rate: Interval; clear: boolean };
-
-/** The agent that wins more than half of the decisive matches (null if none, or no decisive matches). `clear` means
- *  the 95% interval excludes 50%. */
-export function leader(s: RunSummary | null | undefined, agents: { id: string; label: string }[], condition?: string): Lead | null {
-  for (const a of agents) {
-    const r = agentRecord(s, a.id, condition).winRate;
-    if (r && r.p > 0.5) return { id: a.id, label: a.label, rate: r, clear: r.lo > 0.5 };
-  }
-  return null;
-}
-
-export type PoolStory = {
-  /** The equal-latency control condition in the pool, if any (e.g. "fixed-250"). */
-  control: string | null;
-  /** Who wins with latency equalised: the better decision maker. */
-  decisions: Lead | null;
-  /** Who wins at real latency. */
-  real: Lead | null;
-  /** Median real response time per agent (real latency, else every condition). */
-  p50: Record<string, number>;
-  faster: { id: string; label: string; gapMs: number } | null;
-  /** E.g. "Microsoft makes better decisions; Jev reacts faster" (null when the pool has no data). */
-  tagline: string | null;
-};
-
-/** What the pool says, computed from its summary: decision quality from the equal-latency control, speed from the
- *  measured medians, and the real-latency result. */
-export function poolStory(s: RunSummary | null | undefined, agents: { id: string; label: string }[]): PoolStory {
-  const conds = (s?.conditions ?? []).filter((c) => c.matches > 0).map((c) => c.condition);
-  const control = conds.includes("fixed-250") ? "fixed-250" : conds.find((c) => c.startsWith("fixed-")) ?? null;
-  const decisions = control ? leader(s, agents, control) : null;
-  const real = conds.includes("scaled-1") ? leader(s, agents, "scaled-1") : null;
-  const p50: Record<string, number> = {};
-  for (const a of agents) {
-    const atReal = agentRecord(s, a.id, "scaled-1").p50;
-    p50[a.id] = Number.isFinite(atReal) ? atReal : agentRecord(s, a.id).p50;
-  }
-  let faster: PoolStory["faster"] = null;
-  if (agents.length === 2 && agents.every((a) => Number.isFinite(p50[a.id]))) {
-    const [x, y] = [...agents].sort((a, b) => p50[a.id] - p50[b.id]);
-    const gapMs = p50[y.id] - p50[x.id];
-    if (gapMs >= SPEED_GAP_MS) faster = { id: x.id, label: x.label, gapMs };
-  }
-  const parts: string[] = [];
-  if (control) parts.push(decisions?.clear ? `${shortName(decisions.label)} makes better decisions` : "decisions are too close to call");
-  if (agents.some((a) => Number.isFinite(p50[a.id]))) {
-    if (faster && decisions?.clear && faster.id === decisions.id) parts[0] += " and reacts faster";
-    else parts.push(faster ? `${shortName(faster.label)} reacts faster` : "both react about as fast");
-  }
-  const tagline = conds.length && parts.length ? parts.join("; ").replace(/^./, (c) => c.toUpperCase()) : null;
-  return { control, decisions, real, p50, faster, tagline };
-}

@@ -1,6 +1,8 @@
 import { memo, useState, type CSSProperties } from "react";
 import type { DecisionRec } from "../../runner/log.ts";
-import { TURRET_LEVELS, TURRET_VALUES } from "../../protocol/v1.ts";
+import { TURRET_LEVELS as P1_TURRET_LEVELS, TURRET_VALUES } from "../../protocol/v1.ts";
+import { TURRET_LEVELS as P2_TURRET_LEVELS } from "../../protocol/v2.ts";
+import { TURRET_STEP_MAX } from "../../sim/tuning.ts";
 import { DRIVE_CMDS } from "../../sim/types.ts";
 import { latestApplied, pendingView, type MatchModel, type PendingView } from "../replay/model.ts";
 import { usePlayer, type Player } from "../replay/player.ts";
@@ -41,7 +43,7 @@ export function BrainPanel({ model, player, slot, color }: Props) {
         <div className="brain__model">{agent.model ?? agent.id}</div>
       </header>
       <PendingRow pending={pending} tick={snap.tick} hz={hz} />
-      <DecisionView d={d} list={list} />
+      <DecisionView d={d} list={list} stepped={model.header.sim !== "sim-2"} />
     </aside>
   );
 }
@@ -69,14 +71,18 @@ function PendingRow({ pending, tick, hz }: { pending: PendingView | null; tick: 
   );
 }
 
-function turretSummary(v: number): string {
+/** sim-2 turret orders are a rate (% of full speed); sim-3 orders are a step (degrees). Logs key turret probabilities by label. */
+const turretAmount = (v: number, stepped: boolean) =>
+  stepped ? `${Math.round((Math.abs(v) * TURRET_STEP_MAX * 180) / Math.PI)}°` : `${Math.round(Math.abs(v) * 100)}%`;
+
+function turretSummary(v: number, stepped: boolean): string {
   if (Math.abs(v) < 0.03) return "hold";
-  return `${v > 0 ? "right" : "left"} ${Math.round(Math.abs(v) * 100)}%`;
+  return `${v > 0 ? "right" : "left"} ${turretAmount(v, stepped)}`;
 }
 
-function turretArrow(v: number): string {
+function turretArrow(v: number, stepped: boolean): string {
   if (Math.abs(v) < 0.03) return "hold";
-  return `${v > 0 ? "→" : "←"} ${Math.round(Math.abs(v) * 100)}%`;
+  return `${v > 0 ? "→" : "←"} ${turretAmount(v, stepped)}`;
 }
 
 /** Fractional column index of a turret rate on the (non-uniform) level scale. */
@@ -87,7 +93,8 @@ function turretIndex(v: number): number {
   return vs.length - 1;
 }
 
-const DecisionView = memo(function DecisionView({ d, list }: { d: DecisionRec | null; list: DecisionRec[] }) {
+const DecisionView = memo(function DecisionView({ d, list, stepped }: { d: DecisionRec | null; list: DecisionRec[]; stepped: boolean }) {
+  const TURRET_LEVELS = stepped ? P2_TURRET_LEVELS : P1_TURRET_LEVELS;
   if (!d) {
     return (
       <div className="brain__body">
@@ -117,7 +124,7 @@ const DecisionView = memo(function DecisionView({ d, list }: { d: DecisionRec | 
         <span className="chip chip--team">
           <span aria-hidden>{DRIVE_ICON[action?.drive ?? "stop"]}</span> {action ? driveLabel(action.drive) : "no change"}
         </span>
-        <span className="chip">turret {action ? turretArrow(action.turret) : "—"}</span>
+        <span className="chip">turret {action ? turretArrow(action.turret, stepped) : "—"}</span>
         {action?.fire && <span className="chip chip--fire">FIRE</span>}
       </div>
 
@@ -151,7 +158,7 @@ const DecisionView = memo(function DecisionView({ d, list }: { d: DecisionRec | 
 
           <section className="brain__section">
             <h4>
-              Turret <span className="brain__dim">expected {turretSummary(action?.turret ?? 0)}</span>
+              Turret <span className="brain__dim">{stepped ? "chose" : "expected"} {turretSummary(action?.turret ?? 0, stepped)}</span>
             </h4>
             <div className="turret">
               <div className="turret__cols">
@@ -164,20 +171,20 @@ const DecisionView = memo(function DecisionView({ d, list }: { d: DecisionRec | 
                   );
                 })}
                 <span className="turret__ev" style={{ left: `${((turretIndex(action?.turret ?? 0) + 0.5) / TURRET_LEVELS.length) * 100}%` }}>
-                  <span className="turret__ev-label">EV</span>
+                  <span className="turret__ev-label">{stepped ? "pick" : "EV"}</span>
                 </span>
               </div>
               <div className="turret__axis">
-                <span>hard L</span>
+                <span>{stepped ? `${turretAmount(1, true)} L` : "hard L"}</span>
                 <span>hold</span>
-                <span>hard R</span>
+                <span>{stepped ? `${turretAmount(1, true)} R` : "hard R"}</span>
               </div>
             </div>
           </section>
 
           <section className="brain__section">
             <h4>
-              Fire <span className="brain__dim">fires at p ≥ 0.5</span>
+              Fire <span className="brain__dim">{stepped ? "fires with probability p" : "fires at p ≥ 0.5"}</span>
             </h4>
             <div className={`fire ${action?.fire ? "is-fire" : ""}`}>
               <span className="fire__track">

@@ -55,6 +55,16 @@ One-time setup on the Cloudflare account (the D1 id is already in `wrangler.json
 
 Later deploys are step 8 (if the benchmark changed) and step 9. A deploy restarts Durable Objects and drops matches in progress, so deploy when `/api/status` shows `liveMatches: 0`. `MAX_CONCURRENT`, `MAX_QUEUE` and `BUDGET_USD` are `vars` in `wrangler.jsonc`.
 
+### Staging
+
+The `staging` environment in `wrangler.jsonc` is a separate Worker (`decision-arena-staging`) with its own D1 database, R2 bucket, Durable Objects and match pool. It serves only its workers.dev URL and sends `noindex`. The Vite plugin picks the environment at build time, so use the scripts rather than `wrangler deploy --env`:
+
+- First time only: create the D1 database and R2 bucket named in `env.staging`, then set the key with `wrangler secret put OPENROUTER_API_KEY -c wrangler.jsonc --env staging`.
+- `pnpm db:migrate:staging` applies migrations to the staging D1.
+- `pnpm cf:deploy:staging` builds with `CLOUDFLARE_ENV=staging`, runs the secret scan and deploys.
+
+Plain `wrangler` commands follow the most recent build (via `.wrangler/deploy/config.json`), so run `pnpm build` before any production command.
+
 ## License
 
 Code: [MIT](LICENSE) © 2026 Simplify Studios LLC. The bundled Inter typeface is under the SIL Open Font License 1.1 (via `@fontsource-variable/inter`).

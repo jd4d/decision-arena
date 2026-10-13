@@ -1,10 +1,15 @@
 import type { Rect } from "./math.ts";
+import type { SimVersion } from "./tuning.ts";
 
 export const DRIVE_CMDS = ["forward", "forward_left", "forward_right", "reverse", "turn_left", "turn_right", "stop"] as const;
 export type DriveCmd = (typeof DRIVE_CMDS)[number];
 
-/** Orders a tank follows until replaced. turret is a rotation rate in [-1, 1] (positive = clockwise/right). */
-export type Action = { drive: DriveCmd; turret: number; fire: boolean };
+/**
+ * Orders a tank follows until replaced. turret is a rotation rate in [-1, 1] (sim-2) or a step fraction (sim-3);
+ * positive = clockwise/right. throttle (sim-3, optional, default 1) scales drive speed and arc turning, and the size of a
+ * turn-in-place step; only the confidence-scaled decoder sets it.
+ */
+export type Action = { drive: DriveCmd; turret: number; fire: boolean; throttle?: number };
 
 export const IDLE_ACTION: Action = { drive: "stop", turret: 0, fire: false };
 
@@ -19,6 +24,8 @@ export type Tank = {
   orders: Action;
   fireLatch: boolean; // fire order waiting to be executed
   moved: { dx: number; dy: number }; // displacement last tick
+  /** sim-3: what is left of the current step. drive = radians of a turn in place; turret = signed radians. */
+  stepLeft: { drive: number; turret: number };
 };
 
 export type Shell = {
@@ -42,6 +49,7 @@ export type SimEvent =
   | { t: number; type: "end"; winner: 0 | 1 | null; reason: "destroyed" | "time" | "mutual" };
 
 export type World = {
+  sim: SimVersion;
   tick: number;
   mapId: string;
   walls: Rect[];

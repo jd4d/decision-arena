@@ -11,6 +11,7 @@ export interface Env {
   MAX_CONCURRENT?: string;
   MAX_QUEUE?: string;
   BUDGET_USD?: string;
+  NOINDEX?: string; // "1" on staging: noindex header + disallow-all robots.txt
 }
 
 /** Every match room runs in the same region so all matches call OpenRouter from the same place (fairness). */
@@ -37,4 +38,5 @@ export type RoomSpec = {
   condition: string; // PublicCondition
   order: [string, string]; // model keys by slot
   createdAt: number;
+  decoder?: string; // PublicDecoder; missing on specs stored before answer methods existed = the default
 };

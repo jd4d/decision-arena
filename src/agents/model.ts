@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import type { Observation } from "../sim/observe.ts";
 import type { Agent, DecisionResult } from "./types.ts";
 import { DECISION_TIMEOUT_MS, decisionBody, httpError, MODELS, toDecisionResult, warmupBody, type ModelKey, type RawResponse } from "./models.ts";
+import { DEFAULT_DECODER, protocolLabel, type Decoder } from "../protocol/v2.ts";
 
 export { MODELS, type ModelKey };
 
@@ -48,15 +49,15 @@ export function postDecision(body: unknown, timeoutMs = DECISION_TIMEOUT_MS): Pr
   });
 }
 
-export function modelAgent(key: ModelKey): Agent {
+export function modelAgent(key: ModelKey, decoder: Decoder = DEFAULT_DECODER): Agent {
   const { model, label } = MODELS[key];
   return {
-    info: { id: key, label, kind: "model", model },
+    info: { id: key, label, kind: "model", model, protocol: protocolLabel(decoder) },
     async warmup() {
       await postDecision(warmupBody(model));
     },
     async decide(o: Observation): Promise<DecisionResult> {
-      return toDecisionResult(await postDecision(decisionBody(model, o)));
+      return toDecisionResult(await postDecision(decisionBody(model, o)), o, decoder);
     },
   };
 }

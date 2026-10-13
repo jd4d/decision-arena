@@ -4,22 +4,28 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { DEFAULT_PUBLIC_CONDITION, PUBLIC_CONDITIONS } from "../../api/contract.ts";
 import type { MatchIndexEntry } from "../../analysis/schema.ts";
 import { MAP_IDS, MAPS } from "../../sim/maps.ts";
-import { ApiFailure, listMatches, useStatus } from "../lib/api.ts";
-import { compareConditions, conditionLabel, mmss, ORIGIN_NOTE, originTag, titleCase } from "../lib/format.ts";
+import { ApiFailure, getVersions, listMatches, useStatus } from "../lib/api.ts";
+import { useAsync } from "../lib/data.ts";
+import { compareConditions, conditionLabel, mmss, ORIGIN_NOTE, originTag, titleCase, versionLabel } from "../lib/format.ts";
 import { poolMatchHref } from "../lib/router.ts";
 import { distinctColors } from "../lib/theme.ts";
 import { MapThumb } from "./MapThumb.tsx";
 
-type Filters = { condition: string; map: string; winner: string; tags: string[] };
-const DEFAULT: Filters = { condition: "all", map: "all", winner: "all", tags: [] };
+type Filters = { version: string; condition: string; map: string; winner: string; tags: string[] };
+const DEFAULT: Filters = { version: "all", condition: "all", map: "all", winner: "all", tags: [] };
 const KEY = "decision-arena:filters:pool";
+
+/** Open the match list filtered to one version (used by the results page's version picker). */
+export function filterMatchesToVersion(version: string): void {
+  try { sessionStorage.setItem(KEY, JSON.stringify({ ...DEFAULT, version })); } catch { /* ignore */ }
+}
 const PAGE = 100; // API maximum per request
 const SHOW = 48; // cards added to the DOM per scroll step
 
 function loadFilters(): Filters {
   try {
     const f = { ...DEFAULT, ...JSON.parse(sessionStorage.getItem(KEY) ?? "{}") } as Filters;
-    return { condition: String(f.condition), map: String(f.map), winner: String(f.winner), tags: Array.isArray(f.tags) ? f.tags.map(String) : [] };
+    return { version: String(f.version), condition: String(f.condition), map: String(f.map), winner: String(f.winner), tags: Array.isArray(f.tags) ? f.tags.map(String) : [] };
   } catch {
     return DEFAULT;
   }
@@ -30,20 +36,26 @@ type Pages = { matches: MatchIndexEntry[]; next: string | null; loading: boolean
 export function MatchBrowser() {
   const { status } = useStatus();
   const [pages, setPages] = useState<Pages>({ matches: [], next: null, loading: true, error: null, started: false });
+  // The version filter is applied by the server (a version can sit far down the newest-first list), so changing it reloads.
+  const [version, setVersion] = useState(() => loadFilters().version);
+  const versions = useAsync(() => getVersions().catch(() => null), []);
   const busy = useRef(false);
+  const gen = useRef(0);
   const load = useCallback(async (cursor: string | null) => {
-    if (busy.current) return;
+    if (busy.current && cursor) return;
     busy.current = true;
+    const my = cursor ? gen.current : ++gen.current;
     setPages((p) => ({ ...p, loading: true, error: null }));
     try {
-      const r = await listMatches(cursor, PAGE);
+      const r = await listMatches(cursor, PAGE, version === "all" ? undefined : version);
+      if (my !== gen.current) return; // a newer version choice replaced this load
       setPages((p) => ({ matches: cursor ? [...p.matches, ...r.matches] : r.matches, next: r.nextCursor, loading: false, error: null, started: true }));
     } catch (e) {
-      setPages((p) => ({ ...p, loading: false, error: e as ApiFailure, started: true }));
+      if (my === gen.current) setPages((p) => ({ ...p, loading: false, error: e as ApiFailure, started: true }));
     } finally {
-      busy.current = false;
+      if (my === gen.current) busy.current = false;
     }
-  }, []);
+  }, [version]);
   useEffect(() => { void load(null); }, [load]);
 
   const total = status?.communityMatches ?? null;
@@ -66,7 +78,8 @@ export function MatchBrowser() {
       </div>
     );
   } else {
-    body = <FilteredCards pages={pages} loadMore={pages.next ? () => void load(pages.next) : null} />;
+    body = <FilteredCards pages={pages} loadMore={pages.next ? () => void load(pages.next) : null} version={version} setVersion={setVersion}
+      versions={versions.status === "ready" && versions.data ? versions.data.versions.map((v) => v.id) : []} />;
   }
 
   return (
@@ -79,7 +92,7 @@ export function MatchBrowser() {
         {total !== null && total > 0 && <div className="browser__total"><b>{total.toLocaleString()}</b> match{total === 1 ? "" : "es"} in the pool</div>}
       </header>
       <p className="browser__intro">
-        Every match, newest first. The pool started with the t1 tournament, run locally (tagged <span className="prov">seed · t1</span>), and every match run
+        Every match, newest first. The pool started with a seed tournament, run locally (tagged <span className="prov">seed</span>), and every match run
         from this site adds to it. Matches use real latency unless the card names another rule.
       </p>
       {body}
@@ -87,11 +100,21 @@ export function MatchBrowser() {
   );
 }
 
-function FilteredCards({ pages, loadMore }: { pages: Pages; loadMore: (() => void) | null }) {
+function FilteredCards({ pages, loadMore, version, setVersion, versions }: {
+  pages: Pages; loadMore: (() => void) | null; version: string; setVersion: (v: string) => void; versions: string[];
+}) {
   const matches = pages.matches;
-  const [f, setF] = useState<Filters>(loadFilters);
+  const [f0, setF0] = useState<Filters>(loadFilters);
+  // version lives in MatchBrowser (it decides what the server returns); everything else filters the loaded pages.
+  const f = { ...f0, version };
+  const setF = (next: Filters | ((o: Filters) => Filters)) => {
+    const n = typeof next === "function" ? next(f) : next;
+    if (n.version !== version) setVersion(n.version);
+    setF0(n);
+  };
   const [limit, setLimit] = useState(SHOW);
-  useEffect(() => { try { sessionStorage.setItem(KEY, JSON.stringify(f)); } catch { /* ignore */ } setLimit(SHOW); }, [f]);
+  const fKey = JSON.stringify(f);
+  useEffect(() => { try { sessionStorage.setItem(KEY, fKey); } catch { /* ignore */ } setLimit(SHOW); }, [fKey]);
   const set = (patch: Partial<Filters>) => setF((o) => ({ ...o, ...patch }));
 
   const options = useMemo(() => {
@@ -99,19 +122,21 @@ function FilteredCards({ pages, loadMore }: { pages: Pages; loadMore: (() => voi
     const agents = new Map<string, string>();
     for (const m of matches) m.agents.forEach((a, i) => agents.set(a, m.labels[i]));
     return {
+      versions: uniq([...versions, ...matches.map((m) => m.version).filter((v): v is string => !!v)]),
       conditions: uniq([...Object.keys(PUBLIC_CONDITIONS), ...matches.map((m) => m.condition)]).sort(compareConditions),
       maps: uniq([...MAP_IDS, ...matches.map((m) => m.map)]),
       agents: [...agents.entries()].sort((a, b) => a[1].localeCompare(b[1])),
       tags: uniq(matches.flatMap((m) => m.highlights)).sort(),
     };
-  }, [matches]);
+  }, [matches, versions]);
 
   const list = useMemo(() => matches.filter((m) =>
+    (version === "all" || !m.version || m.version === version) &&
     (f.condition === "all" || m.condition === f.condition) &&
     (f.map === "all" || m.map === f.map) &&
     (f.winner === "all" || (f.winner === "draw" ? m.winner === null : m.winner !== null && m.agents[m.winner] === f.winner)) &&
     f.tags.every((t) => m.highlights.includes(t)),
-  ), [matches, f]);
+  ), [matches, fKey]);
 
   const active = JSON.stringify(f) !== JSON.stringify(DEFAULT);
   const shown = list.slice(0, limit);
@@ -137,6 +162,7 @@ function FilteredCards({ pages, loadMore }: { pages: Pages; loadMore: (() => voi
   return (
     <>
       <div className="filters" role="search">
+        <Select label="Version" value={f.version} onChange={(version) => set({ version })} options={options.versions.map((v) => [v, versionLabel(v)])} />
         <Select label="Latency rule" value={f.condition} onChange={(condition) => set({ condition })} options={options.conditions.map((c) => [c, conditionLabel(c)])} />
         <Select label="Map" value={f.map} onChange={(map) => set({ map })} options={options.maps.map((m) => [m, MAPS[m]?.name ?? m])} />
         <Select label="Winner" value={f.winner} onChange={(winner) => set({ winner })} options={[["draw", "Draws"], ...options.agents]} />
@@ -213,6 +239,7 @@ function MatchCard({ m, i }: { m: MatchIndexEntry; i: number }) {
         <div className="card__meta">
           <span>{m.winner === null ? "Draw" : titleCase(m.reason)}</span>
           {m.condition !== DEFAULT_PUBLIC_CONDITION && <><span>·</span><span className="card__cond">{conditionLabel(m.condition)}</span></>}
+          {m.version && <><span>·</span><span className="card__ver" title={m.version.replace(":", " · ")}>{versionLabel(m.version)}</span></>}
           {tag && <span className="card__run prov" title={ORIGIN_NOTE}>{tag}</span>}
         </div>
         {m.highlights.length > 0 && (

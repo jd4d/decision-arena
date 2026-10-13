@@ -6,9 +6,12 @@ import { runMatch, type Budget } from "./engine.ts";
 import { conditionName, parseLatency, type LatencyMode } from "./latency.ts";
 import { parseLog, type DecisionRec, type HeaderRec, type ResultRec } from "./log.ts";
 import { makeAgent, RUNS_DIR } from "./registry.ts";
+import type { Decoder } from "../protocol/v2.ts";
 import type { Agent } from "../agents/types.ts";
 
 export type TournamentConfig = {
+  /** p2 decoder variant for model agents (default: the live one); recorded as the protocol label "p2-<decoder>". */
+  decoder?: Decoder;
   runId: string;
   agents: [string, string];
   maps: string[];
@@ -92,7 +95,7 @@ export async function runTournament(cfg: TournamentConfig) {
       latency = parseLatency(j.condition);
       condName = conditionName(latency);
     }
-    const agents = [makeAgent(j.order[0], j.seed), makeAgent(j.order[1], j.seed + 1)] as [Agent, Agent];
+    const agents = [makeAgent(j.order[0], j.seed, cfg.decoder), makeAgent(j.order[1], j.seed + 1, cfg.decoder)] as [Agent, Agent];
     const file = join(mdir, `${j.matchId}.jsonl`);
     writeFileSync(file, "");
     const { records, result } = await runMatch(

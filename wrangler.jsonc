@@ -53,5 +53,50 @@
     { "pattern": "decisionarena.ai", "custom_domain": true },
     { "pattern": "www.decisionarena.ai", "custom_domain": true }
   ],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+
+  // Staging: a separate Worker (decision-arena-staging) with its own D1, R2, Durable Objects and budget, for sharing
+  // with reviewers on its workers.dev URL. Build with CLOUDFLARE_ENV=staging
+  // (the Vite plugin picks the environment at build time; `wrangler deploy --env` is not used). See `pnpm cf:deploy:staging`.
+  // Bindings, vars and Durable Objects are not inherited, so all are restated; routes ARE inherited, so they are
+  // explicitly emptied — otherwise a staging deploy would try to claim decisionarena.ai.
+  "env": {
+    "staging": {
+      "name": "decision-arena-staging",
+      "workers_dev": true,
+      "routes": [],
+      // Worker first for every path so it can add X-Robots-Tag: noindex and serve a disallow-all robots.txt.
+      "assets": {
+        "binding": "ASSETS",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": true
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "MATCH_ROOM", "class_name": "MatchRoom" },
+          { "name": "LOBBY", "class_name": "Lobby" }
+        ]
+      },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MatchRoom", "Lobby"] }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "decision-arena-staging",
+          "database_id": "f828c061-d8ab-491f-a111-dc784f73b31f",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "LOGS", "bucket_name": "decision-arena-logs-staging" }],
+      // Secret OPENROUTER_API_KEY is per Worker: `wrangler secret put OPENROUTER_API_KEY -c wrangler.jsonc --env staging`.
+      // Low caps: staging shares the production OpenRouter key, so it must not drain shared credit or compete with
+      // production for rate limits (which would distort measured latency).
+      "vars": {
+        "MAX_CONCURRENT": "2",
+        "MAX_QUEUE": "10",
+        "BUDGET_USD": "5", // counted from staging's own D1 (~1,600 matches), independently of production
+        "NOINDEX": "1"
+      },
+      "observability": { "enabled": true }
+    }
+  }
 }

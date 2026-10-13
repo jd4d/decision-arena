@@ -1,22 +1,42 @@
-// Results for the one match pool (GET /api/summary/community): the t1 tournament it was seeded with plus every match
-// run from the site, across all six latency rules.
+// Results for the one match pool (GET /api/summary/community): the seed tournament it started with plus every match
+// run from the site, under both latency rules.
 import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { AgentConditionStats, RunSummary } from "../../analysis/schema.ts";
 import { MAPS } from "../../sim/maps.ts";
-import { getCommunitySummary } from "../lib/api.ts";
+import { getCommunitySummary, getVersions } from "../lib/api.ts";
 import { useAsync } from "../lib/data.ts";
-import { compareConditions, conditionDetail, conditionLabel, driveLabel, ms, num, pct, usd } from "../lib/format.ts";
+import { compareConditions, conditionDetail, conditionLabel, driveLabel, ms, num, pct, usd, versionLabel } from "../lib/format.ts";
 import { MATCHES_HREF } from "../lib/router.ts";
+import { filterMatchesToVersion } from "../browser/MatchBrowser.tsx";
 import { canonicalOrder, distinctColors } from "../lib/theme.ts";
 import { CalibrationChart, DriveMix, LatencyHistogram, MapBars, WinRateChart, useSettleAnimations, wilson, type AgentMeta } from "./charts.tsx";
 
 /** Size of the offline tournament the pool was seeded with (runs/t1: 6 rules × 3 maps × 25 seeds × both sides). */
-const T1_MATCHES = 900;
 
 export function ResultsPage() {
-  const s = useAsync(getCommunitySummary, []);
+  // Results are per version (sim + protocol); they are never merged. Default: the current version.
+  const [version, setVersion] = useState<string | null>(null);
+  const vs = useAsync(() => getVersions().catch(() => null), []);
+  const s = useAsync(() => getCommunitySummary(version ?? undefined), [version]);
+  const current = vs.status === "ready" && vs.data ? vs.data.current : null;
+  const shown = version ?? current;
+  const list = vs.status === "ready" && vs.data ? vs.data.versions : [];
   return (
     <div className="results">
+      {list.length > 1 && (
+        <div className="versionbar" role="radiogroup" aria-label="Protocol version">
+          <span className="versionbar__label">Version</span>
+          <div className="seg seg--sm">
+            {list.map((v) => (
+              <button key={v.id} role="radio" aria-checked={shown === v.id} className={shown === v.id ? "is-on" : ""} onClick={() => setVersion(v.id)}
+                title={`${v.sim} · ${v.protocol}`}>
+                {versionLabel(v.id)}{v.id === current ? " · live" : ""} <small>{v.matches.toLocaleString()}</small>
+              </button>
+            ))}
+          </div>
+          <a className="versionbar__notes" href="#/methodology/patch-notes">What changed? →</a>
+        </div>
+      )}
       {s.status === "loading" ? (
         <div className="page-state"><div className="spinner" />Loading results…</div>
       ) : s.status === "error" ? (
@@ -107,10 +127,10 @@ function Summary({ s: raw }: { s: RunSummary }) {
             <span>updated {new Date(s.generatedAt).toLocaleString()}</span>
           </div>
         </div>
-        <a className="btn" href={MATCHES_HREF}>Browse matches →</a>
+        <a className="btn" href={MATCHES_HREF} onClick={() => filterMatchesToVersion(`${s.sim}:${s.protocol}`)}>Browse these matches →</a>
       </header>
       <div className="notice notice--pool notice--community">
-        <b>One pool.</b> It started with the {T1_MATCHES}-match t1 tournament, run locally, and every match run from this site adds to it:
+        <b>One pool.</b> It started with a seed tournament, run locally, and every match run from this site adds to it:
         {" "}{totalMatches.toLocaleString()} matches so far. Every match is tagged with where it ran. <a href="#/methodology/caveats">Caveats →</a>
       </div>
 
@@ -208,7 +228,6 @@ function Summary({ s: raw }: { s: RunSummary }) {
 const HEAD_WIN: { key: string; label: string; match: (c: string) => boolean }[] = [
   { key: "equal", label: "Win rate at equal latency", match: (c) => c.startsWith("fixed-") },
   { key: "real", label: "Win rate at real latency", match: (c) => c === "scaled-1" },
-  { key: "swap", label: "Win rate with latency swapped", match: (c) => c.startsWith("swap-") },
 ];
 
 function Headline({ s, agents, mix }: { s: RunSummary; agents: AgentMeta[]; mix: Record<string, Record<string, number>> }) {

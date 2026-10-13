@@ -21,6 +21,8 @@ export type MatchIndexEntry = {
   highlights: string[]; // e.g. "self-hit", "comeback", "shell clash", "last-second kill"
   /** Community pool only: "web" = run from the site (Cloudflare, eastern North America); "t1-local" = imported real-latency match from benchmark t1 (run locally). */
   origin?: "web" | "t1-local";
+  /** "<sim>:<protocol>" the match was recorded with, e.g. "sim-3:p2-draw" (missing on old static exports). */
+  version?: string;
 };
 
 export type DataIndex = {

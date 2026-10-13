@@ -1,7 +1,7 @@
 // Runtime-neutral pieces of the decision-model agent, shared by the Node agent (model.ts, node:https keep-alive pool)
 // and the Worker agent (model-fetch.ts, fetch). Both must build identical requests and decode identically (fairness).
 import type { Observation } from "../sim/observe.ts";
-import { buildQuestions, decode, encodeState, type Answers } from "../protocol/v1.ts";
+import { buildQuestions, decode, drawSeed, encodeState, type Answers, type Decoder } from "../protocol/v2.ts";
 import type { DecisionResult } from "./types.ts";
 
 export const MODELS = {
@@ -20,7 +20,7 @@ export const decisionBody = (model: string, o: Observation) => ({ model, state: 
 export const warmupBody = (model: string) => ({ model, state: { ping: true }, questions: { ok: { type: "noul", instructions: "Is ping true?" } } });
 
 /** Map a raw response to a DecisionResult; an HTTP/transport error or undecodable answer yields action null. */
-export function toDecisionResult(r: RawResponse): DecisionResult {
+export function toDecisionResult(r: RawResponse, o: Observation, decoder?: Decoder): DecisionResult {
   const base: DecisionResult = {
     action: null,
     realMs: r.ms,
@@ -31,7 +31,7 @@ export function toDecisionResult(r: RawResponse): DecisionResult {
   };
   if (r.error) return { ...base, error: r.error };
   try {
-    const d = decode(r.json.answers as Answers);
+    const d = decode(r.json.answers as Answers, drawSeed(o), decoder);
     return { ...base, action: d.action, detail: d.detail };
   } catch (e) {
     return { ...base, error: `decode: ${(e as Error).message}` };

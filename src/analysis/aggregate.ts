@@ -114,6 +114,8 @@ export function indexEntry(m: Match): MatchIndexEntry {
     durationS: m.result.ticks / (h.tickHz || 30),
     hp: m.result.hp,
     highlights: highlights(m),
+    // Last, so the Worker's stored entry (rowToEntry: ..., highlights, version, origin) serializes identically.
+    version: `${h.sim}:${h.protocol}`,
   };
 }
 

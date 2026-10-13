@@ -3,7 +3,7 @@ import { COMMUNITY_RUN_ID } from "../src/api/contract.ts";
 import { addDigest, emptyAcc, finalizeSummary, type MatchDigest, type SummaryAcc } from "../src/analysis/aggregate.ts";
 import type { MatchIndexEntry, RunSummary } from "../src/analysis/schema.ts";
 import { MODELS } from "../src/agents/models.ts";
-import { PROTOCOL_VERSION } from "../src/protocol/v1.ts";
+import { CURRENT_PROTOCOL } from "../src/protocol/v2.ts";
 import { SIM_VERSION, TICK_HZ } from "../src/sim/tuning.ts";
 
 export type MatchRow = {
@@ -28,11 +28,11 @@ export type MatchRow = {
   origin?: "web" | "t1-local";
 };
 
-const LIST_COLS = "id, finished_at, map, condition, seed, agents, winner, reason, ticks, hp, highlights, origin";
+const LIST_COLS = "id, finished_at, map, condition, seed, agents, winner, reason, ticks, hp, highlights, origin, sim, protocol";
 
 export const logPath = (id: string) => `/api/matches/${id}/log`;
 
-export function rowToEntry(r: Pick<MatchRow, "id" | "map" | "condition" | "seed" | "agents" | "winner" | "reason" | "ticks" | "hp" | "highlights" | "origin">): MatchIndexEntry {
+export function rowToEntry(r: Pick<MatchRow, "id" | "map" | "condition" | "seed" | "agents" | "winner" | "reason" | "ticks" | "hp" | "highlights" | "origin" | "sim" | "protocol">): MatchIndexEntry {
   const agents = JSON.parse(r.agents) as { id: string; label: string }[];
   return {
     runId: COMMUNITY_RUN_ID,
@@ -48,6 +48,7 @@ export function rowToEntry(r: Pick<MatchRow, "id" | "map" | "condition" | "seed"
     durationS: r.ticks / TICK_HZ,
     hp: r.hp ? JSON.parse(r.hp) : [0, 0],
     highlights: r.highlights ? JSON.parse(r.highlights) : [],
+    version: `${r.sim}:${r.protocol}`,
     origin: r.origin === "t1-local" ? "t1-local" : "web",
   };
 }
@@ -79,12 +80,14 @@ export function decodeCursor(c: string): { finishedAt: number; id: string } | nu
   }
 }
 
-export async function listMatches(db: D1Database, limit: number, cursor: { finishedAt: number; id: string } | null) {
-  const q = cursor
-    ? db
-        .prepare(`SELECT ${LIST_COLS} FROM matches WHERE status = 'done' AND (finished_at < ?1 OR (finished_at = ?1 AND id < ?2)) ORDER BY finished_at DESC, id DESC LIMIT ?3`)
-        .bind(cursor.finishedAt, cursor.id, limit + 1)
-    : db.prepare(`SELECT ${LIST_COLS} FROM matches WHERE status = 'done' ORDER BY finished_at DESC, id DESC LIMIT ?1`).bind(limit + 1);
+/** Finished matches, newest first; `version` ("<sim>:<protocol>") restricts the list to one version. */
+export async function listMatches(db: D1Database, limit: number, cursor: { finishedAt: number; id: string } | null, version?: string) {
+  const where = [`status = 'done'`];
+  const args: (string | number)[] = [];
+  const arg = (v: string | number) => { args.push(v); return `?${args.length}`; };
+  if (cursor) { const f = arg(cursor.finishedAt), i = arg(cursor.id); where.push(`(finished_at < ${f} OR (finished_at = ${f} AND id < ${i}))`); }
+  if (version) { const [sim, protocol] = version.split(":"); where.push(`sim = ${arg(sim)} AND protocol = ${arg(protocol)}`); }
+  const q = db.prepare(`SELECT ${LIST_COLS} FROM matches WHERE ${where.join(" AND ")} ORDER BY finished_at DESC, id DESC LIMIT ${arg(limit + 1)}`).bind(...args);
   const { results } = await q.all<MatchRow>();
   const page = results.slice(0, limit);
   const last = page.at(-1);
@@ -98,50 +101,83 @@ export async function spendAndCount(db: D1Database): Promise<{ usd: number; done
 }
 
 // ---------- Community summary cache ----------
-// The community summary only merges matches of the current sim and protocol versions (results from different versions
-// are never merged). Only the Lobby (a singleton, serialized) writes summary_cache.
+// One summary per version ("<sim>:<protocol>"): results from different versions are never merged, and every version stays
+// readable so the site can filter between them. Only the Lobby (a singleton, serialized) writes summary_cache. The Lobby
+// keeps the CURRENT version's accumulator in memory; other versions (imported experiments, older protocols) are folded
+// straight from D1.
+export const CURRENT_VERSION = `${SIM_VERSION}:${CURRENT_PROTOCOL}`;
+const keyOf = (version: string) => `${COMMUNITY_RUN_ID}:${version}`;
+const VERSION_RE = /^[a-z0-9.-]{1,24}:[a-z0-9.-]{1,24}$/;
+export const isVersion = (v: string) => VERSION_RE.test(v);
 
-export function emptyCommunitySummary(generatedAt: string): RunSummary {
+export function emptyCommunitySummary(generatedAt: string, version = CURRENT_VERSION): RunSummary {
+  const [sim, protocol] = version.split(":");
   const s = finalizeSummary(COMMUNITY_RUN_ID, emptyAcc(), generatedAt);
-  return { ...s, sim: SIM_VERSION, protocol: PROTOCOL_VERSION, agents: Object.entries(MODELS).map(([id, m]) => ({ id, label: m.label, model: m.model })) };
+  return { ...s, sim, protocol, agents: Object.entries(MODELS).map(([id, m]) => ({ id, label: m.label, model: m.model })) };
 }
 
-export async function readSummary(db: D1Database): Promise<RunSummary | null> {
-  const r = await db.prepare(`SELECT summary FROM summary_cache WHERE run_id = ?1`).bind(COMMUNITY_RUN_ID).first<{ summary: string }>();
+export async function readSummary(db: D1Database, version = CURRENT_VERSION): Promise<RunSummary | null> {
+  const r = await db.prepare(`SELECT summary FROM summary_cache WHERE run_id = ?1`).bind(keyOf(version)).first<{ summary: string }>();
   return r ? (JSON.parse(r.summary) as RunSummary) : null;
 }
 
-export async function readAcc(db: D1Database): Promise<SummaryAcc | null> {
-  const r = await db.prepare(`SELECT acc FROM summary_cache WHERE run_id = ?1`).bind(COMMUNITY_RUN_ID).first<{ acc: string }>();
+/** Every version with a summary, newest first, plus which one is current. */
+export async function listVersions(db: D1Database): Promise<{ current: string; versions: { id: string; sim: string; protocol: string; matches: number }[] }> {
+  const { results } = await db
+    .prepare(`SELECT run_id, matches FROM summary_cache WHERE run_id LIKE ?1 AND matches > 0 ORDER BY updated_at DESC`)
+    .bind(`${COMMUNITY_RUN_ID}:%:%`)
+    .all<{ run_id: string; matches: number }>();
+  const versions = results.map((r) => { const id = r.run_id.slice(COMMUNITY_RUN_ID.length + 1); const [sim, protocol] = id.split(":"); return { id, sim, protocol, matches: r.matches }; });
+  return { current: CURRENT_VERSION, versions };
+}
+
+export async function readAcc(db: D1Database, version = CURRENT_VERSION): Promise<SummaryAcc | null> {
+  const r = await db.prepare(`SELECT acc FROM summary_cache WHERE run_id = ?1`).bind(keyOf(version)).first<{ acc: string }>();
   return r ? (JSON.parse(r.acc) as SummaryAcc) : null;
 }
 
-/**
- * Fold every finished-but-unfolded digest into `acc` and persist acc + summary + folded flags in one atomic batch.
- * Catches up on anything missed earlier (crash between insert and fold, concurrent finishes). Returns the new acc.
- */
-export async function foldPending(db: D1Database, acc: SummaryAcc): Promise<{ acc: SummaryAcc; folded: number }> {
+/** Fold unfolded digests of one version into `acc`, persisting acc + summary + folded flags atomically per batch. */
+async function foldVersion(db: D1Database, version: string, acc: SummaryAcc): Promise<{ acc: SummaryAcc; folded: number }> {
+  const [sim, protocol] = version.split(":");
   let folded = 0;
   for (;;) {
     const { results } = await db
       .prepare(`SELECT id, digest FROM matches WHERE folded = 0 AND status = 'done' AND digest IS NOT NULL AND sim = ?1 AND protocol = ?2 ORDER BY finished_at, id LIMIT 200`)
-      .bind(SIM_VERSION, PROTOCOL_VERSION)
+      .bind(sim, protocol)
       .all<{ id: string; digest: string }>();
     if (!results.length && folded) break;
     const next: SummaryAcc = JSON.parse(JSON.stringify(acc));
     for (const r of results) addDigest(next, JSON.parse(r.digest) as MatchDigest);
     const now = Date.now();
-    const summary = next.matches ? finalizeSummary(COMMUNITY_RUN_ID, next, new Date(now).toISOString()) : emptyCommunitySummary(new Date(now).toISOString());
+    const summary = next.matches ? finalizeSummary(COMMUNITY_RUN_ID, next, new Date(now).toISOString()) : emptyCommunitySummary(new Date(now).toISOString(), version);
     await db.batch([
       db.prepare(`UPDATE matches SET folded = 1 WHERE id IN (SELECT value FROM json_each(?1))`).bind(JSON.stringify(results.map((r) => r.id))),
       db
         .prepare(`INSERT INTO summary_cache (run_id, matches, acc, summary, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
                   ON CONFLICT(run_id) DO UPDATE SET matches = excluded.matches, acc = excluded.acc, summary = excluded.summary, updated_at = excluded.updated_at`)
-        .bind(COMMUNITY_RUN_ID, next.matches, JSON.stringify(next), JSON.stringify(summary), now),
+        .bind(keyOf(version), next.matches, JSON.stringify(next), JSON.stringify(summary), now),
     ]);
     acc = next;
     folded += results.length;
     if (results.length < 200) break;
   }
   return { acc, folded };
+}
+
+/**
+ * Fold every finished-but-unfolded digest: other versions first (from their D1 accumulators), then the current version
+ * into the Lobby's in-memory `acc`. Catches up on anything missed earlier. Returns the current version's new acc.
+ */
+export async function foldPending(db: D1Database, acc: SummaryAcc): Promise<{ acc: SummaryAcc; folded: number }> {
+  const { results: others } = await db
+    .prepare(`SELECT DISTINCT sim, protocol FROM matches WHERE folded = 0 AND status = 'done' AND digest IS NOT NULL AND NOT (sim = ?1 AND protocol = ?2)`)
+    .bind(SIM_VERSION, CURRENT_PROTOCOL)
+    .all<{ sim: string; protocol: string }>();
+  let folded = 0;
+  for (const o of others) {
+    const v = `${o.sim}:${o.protocol}`;
+    folded += (await foldVersion(db, v, (await readAcc(db, v)) ?? emptyAcc())).folded;
+  }
+  const cur = await foldVersion(db, CURRENT_VERSION, acc);
+  return { acc: cur.acc, folded: folded + cur.folded };
 }
