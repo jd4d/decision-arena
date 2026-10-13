@@ -1,9 +1,9 @@
 // decisionarena.ai Worker: /api/* (contract: src/api/contract.ts). Everything else is Workers Static Assets
 // (the Vite build, SPA fallback; curated benchmark data under /data/*).
-import { DEFAULT_PUBLIC_CONDITION, PUBLIC_CONDITIONS, type ApiError, type CreateMatchRequest, type CreateMatchResponse, type PublicCondition } from "../src/api/contract.ts";
+import { DEFAULT_PUBLIC_CONDITION, DEFAULT_PUBLIC_DECODER, PUBLIC_CONDITIONS, PUBLIC_DECODERS, type ApiError, type CreateMatchRequest, type CreateMatchResponse, type PublicCondition } from "../src/api/contract.ts";
 import { MODELS } from "../src/agents/models.ts";
 import { MAP_IDS } from "../src/sim/maps.ts";
-import { decodeCursor, emptyCommunitySummary, getEntry, listMatches, readSummary } from "./db.ts";
+import { CURRENT_VERSION, decodeCursor, emptyCommunitySummary, getEntry, isVersion, listMatches, listVersions, readSummary } from "./db.ts";
 import { lobbyStub, logKey, MATCH_ID_RE, roomStub, type Env, type RoomSpec } from "./env.ts";
 
 export { Lobby } from "./lobby.ts";
@@ -28,6 +28,8 @@ async function createMatch(req: Request, env: Env): Promise<Response> {
   const condition = body.condition ?? DEFAULT_PUBLIC_CONDITION;
   if (typeof map !== "string" || (map !== "random" && !MAP_IDS.includes(map))) return fail(400, "bad_request", `map must be "random" or one of: ${MAP_IDS.join(", ")}.`);
   if (typeof condition !== "string" || !Object.hasOwn(PUBLIC_CONDITIONS, condition)) return fail(400, "bad_request", `condition must be one of: ${Object.keys(PUBLIC_CONDITIONS).join(", ")}.`);
+  const decoder = body.decoder ?? DEFAULT_PUBLIC_DECODER;
+  if (typeof decoder !== "string" || !Object.hasOwn(PUBLIC_DECODERS, decoder)) return fail(400, "bad_request", `decoder must be one of: ${Object.keys(PUBLIC_DECODERS).join(", ")}.`);
 
   const keys = Object.keys(MODELS);
   const order = (randomU32() & 1 ? [keys[0], keys[1]] : [keys[1], keys[0]]) as [string, string];
@@ -38,6 +40,7 @@ async function createMatch(req: Request, env: Env): Promise<Response> {
     condition: condition as PublicCondition,
     order,
     createdAt: Date.now(),
+    decoder,
   };
   const r = await lobbyStub(env).admit(spec);
   if (!r.ok) return fail(503, r.error, r.message);
@@ -68,15 +71,29 @@ async function route(req: Request, env: Env): Promise<Response> {
 
   if (parts[0] === "status" && parts.length === 1) return only("GET") ?? (await cachedStatus(req, env));
 
+  if (parts[0] === "summary" && parts[1] === "versions" && parts.length === 2) {
+    const bad = only("GET");
+    if (bad) return bad;
+    let v = await listVersions(env.DB);
+    if (!v.versions.length) { // nothing summarized yet (fresh pool or a re-import): fold first, as /summary/community does
+      await lobbyStub(env).refreshSummary();
+      v = await listVersions(env.DB);
+    }
+    return json(v);
+  }
+
   if (parts[0] === "summary" && parts[1] === "community" && parts.length === 2) {
     const bad = only("GET");
     if (bad) return bad;
-    let s = await readSummary(env.DB);
-    if (!s) {
+    // ?version=<sim>:<protocol> selects another version's summary; default is the current one.
+    const version = url.searchParams.get("version") ?? CURRENT_VERSION;
+    if (!isVersion(version)) return fail(400, "bad_request", "version must look like sim-3:p2-draw.");
+    let s = await readSummary(env.DB, version);
+    if (!s && version === CURRENT_VERSION) {
       await lobbyStub(env).refreshSummary();
-      s = (await readSummary(env.DB)) ?? emptyCommunitySummary(new Date().toISOString());
+      s = await readSummary(env.DB, version);
     }
-    return json(s); // no-store: it changes whenever a match finishes
+    return json(s ?? emptyCommunitySummary(new Date().toISOString(), version)); // no-store: it changes whenever a match finishes
   }
 
   if (parts[0] === "matches") {
@@ -90,7 +107,9 @@ async function route(req: Request, env: Env): Promise<Response> {
       const c = url.searchParams.get("cursor");
       const cursor = c ? decodeCursor(c) : null;
       if (c && !cursor) return fail(400, "bad_request", "Invalid cursor.");
-      return json(await listMatches(env.DB, limit, cursor));
+      const version = url.searchParams.get("version");
+      if (version !== null && !isVersion(version)) return fail(400, "bad_request", "version must look like sim-3:p2-draw.");
+      return json(await listMatches(env.DB, limit, cursor, version ?? undefined));
     }
     const id = parts[1];
     if (!MATCH_ID_RE.test(id)) return fail(404, "bad_request", "Unknown match.");
@@ -136,6 +155,9 @@ export default {
     const res = await env.ASSETS.fetch(req);
     const out = new Response(res.body, res);
     out.headers.set("X-Robots-Tag", "noindex, nofollow");
+    // Staging changes often and reviewers must see the latest build: the HTML (which names the hashed bundles) is never
+    // reused without revalidation. Hashed assets keep their normal caching.
+    if ((out.headers.get("Content-Type") ?? "").includes("text/html")) out.headers.set("Cache-Control", "no-cache, must-revalidate");
     return out;
   },
 } satisfies ExportedHandler<Env>;

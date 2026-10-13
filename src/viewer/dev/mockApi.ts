@@ -18,11 +18,11 @@
 //   &mockSpeed=N       run the fake engine N× faster
 //   &mockQueueMs=N     how long each match waits in the queue (default 2000)
 //   &mockQueuePos=N    starting place in line (default 2)
-import { COMMUNITY_RUN_ID, DEFAULT_PUBLIC_CONDITION, PUBLIC_CONDITIONS, type ApiError, type CreateMatchRequest, type LiveMessage, type StatusResponse } from "../../api/contract.ts";
+import { COMMUNITY_RUN_ID, DEFAULT_PUBLIC_CONDITION, DEFAULT_PUBLIC_DECODER, PUBLIC_CONDITIONS, PUBLIC_DECODERS, type ApiError, type CreateMatchRequest, type LiveMessage, type StatusResponse, type VersionsResponse } from "../../api/contract.ts";
 import { MODELS } from "../../agents/models.ts";
 import { digestMatch, indexEntry, mergeDigests, toMatch, type MatchDigest } from "../../analysis/aggregate.ts";
 import type { MatchIndexEntry, RunSummary } from "../../analysis/schema.ts";
-import { PROTOCOL_VERSION } from "../../protocol/v1.ts";
+import { CURRENT_PROTOCOL } from "../../protocol/v2.ts";
 import { ERROR_MIN_MS, msToTicks } from "../../runner/latency.ts";
 import { parseLog, type DecisionRec, type HeaderRec, type LogRec, type ResultRec } from "../../runner/log.ts";
 import { MAP_IDS } from "../../sim/maps.ts";
@@ -66,6 +66,8 @@ type Item = { entry: MatchIndexEntry; digest: MatchDigest; source: string; creat
 type Base = {
   /** Every usable local log, whether or not it is shown in the pool (mock matches replay these). */
   sources: Item[];
+  /** Every usable model match of any version (mock live matches pick from here by the requested answer method). */
+  all: Item[];
   seeds: Item[];
   added: Item[];
   byId: Map<string, Item>;
@@ -78,11 +80,11 @@ const poolEntry = (e: MatchIndexEntry, id: string, origin: MatchIndexEntry["orig
 function base(): Promise<Base> {
   baseP ??= (async () => {
     const t0 = performance.now();
-    const parsed = await Promise.all(Object.keys(LOGS).sort().map(async (source): Promise<(Item & { bots: boolean }) | null> => {
+    const parsed = await Promise.all(Object.keys(LOGS).sort().map(async (source): Promise<(Item & { bots: boolean; current: boolean }) | null> => {
       try {
         const m = toMatch(parseLog(await LOGS[source]()));
-        // The Worker only pools matches recorded with the current sim and protocol.
-        if (!m || m.header.sim !== SIM_VERSION || m.header.protocol !== PROTOCOL_VERSION) return null;
+        // Every version is listed (as the Worker does); summaries are per version and mock live matches replay the current one.
+        if (!m) return null;
         const id = `s${hash36(source)}`;
         return {
           entry: poolEntry(indexEntry(m), id, "t1-local"),
@@ -90,6 +92,7 @@ function base(): Promise<Base> {
           source,
           createdAt: Date.parse(m.header.createdAt) || 0,
           bots: m.header.agents.some((a) => a.kind !== "model"),
+          current: m.header.sim === SIM_VERSION && m.header.protocol === CURRENT_PROTOCOL,
         };
       } catch {
         return null;
@@ -98,17 +101,19 @@ function base(): Promise<Base> {
     const usable = parsed.filter((x) => x !== null);
     // Bot matches are dev fixtures, not entrants: use them only when no model matches are on disk.
     const models = usable.filter((x) => !x.bots);
-    const sources: Item[] = (models.length ? models : usable).sort((a, b) => b.createdAt - a.createdAt || a.entry.matchId.localeCompare(b.entry.matchId));
-    const bySource = new Map(sources.map((x) => [x.source, x]));
+    const all: Item[] = (models.length ? models : usable).sort((a, b) => b.createdAt - a.createdAt || a.entry.matchId.localeCompare(b.entry.matchId));
+    // Mock live matches replay current-version logs only.
+    const sources = all.filter((x) => (x as Item & { current: boolean }).current);
+    const bySource = new Map(all.map((x) => [x.source, x]));
     const added: Item[] = [];
     for (const a of store.added) {
       const src = bySource.get(a.source);
       if (src) added.push({ ...src, entry: a.entry });
     }
-    const seeds = STATE === "empty" ? [] : sources;
+    const seeds = STATE === "empty" ? [] : all;
     const byId = new Map([...seeds, ...added].map((x) => [x.entry.matchId, x]));
     console.info(`[mock API] pool of ${seeds.length} local + ${added.length} mock matches from ${Object.keys(LOGS).length} logs in runs/ (${Math.round(performance.now() - t0)} ms)`);
-    return { sources, seeds, added, byId };
+    return { sources, all, seeds, added, byId };
   })();
   return baseP;
 }
@@ -116,12 +121,24 @@ function base(): Promise<Base> {
 /** Newest first, as the Worker lists them. */
 const pool = (b: Base): Item[] => [...[...b.added].reverse(), ...b.seeds];
 
-function summarize(b: Base): RunSummary {
-  const items = pool(b);
+const CURRENT_VERSION = `${SIM_VERSION}:${CURRENT_PROTOCOL}`;
+const versionOf = (d: MatchDigest) => `${d.sim}:${d.protocol}`;
+
+function summarize(b: Base, version = CURRENT_VERSION): RunSummary {
+  const items = pool(b).filter((x) => versionOf(x.digest) === version);
   const s = mergeDigests(COMMUNITY_RUN_ID, items.map((x) => x.digest), new Date().toISOString());
   if (items.length) return s;
-  // Like the Worker's empty summary: current versions and the lineup, no conditions.
-  return { ...s, sim: SIM_VERSION, protocol: PROTOCOL_VERSION, agents: Object.entries(MODELS).map(([id, m]) => ({ id, label: m.label, model: m.model })) };
+  // Like the Worker's empty summary: that version and the lineup, no conditions.
+  const [sim, protocol] = version.split(":");
+  return { ...s, sim, protocol, agents: Object.entries(MODELS).map(([id, m]) => ({ id, label: m.label, model: m.model })) };
+}
+
+function versions(b: Base): VersionsResponse {
+  const by = new Map<string, { n: number; t: number }>();
+  for (const x of pool(b)) { const v = versionOf(x.digest), e = by.get(v) ?? { n: 0, t: 0 }; e.n++; e.t = Math.max(e.t, x.createdAt); by.set(v, e); }
+  // Local runs/ also holds a few tiny dev experiments; only list real pools (the Worker has no such leftovers).
+  const list = [...by.entries()].filter(([id, e]) => e.n >= 10 || id === CURRENT_VERSION).sort((a, c) => c[1].t - a[1].t).map(([id, e]) => { const [sim, protocol] = id.split(":"); return { id, sim, protocol, matches: e.n }; });
+  return { current: CURRENT_VERSION, versions: list };
 }
 
 async function logText(b: Base, id: string): Promise<string | null> {
@@ -204,7 +221,7 @@ function timeline(b: Base, id: string): Promise<Timeline> {
 function finish(b: Base, id: string): void {
   if (b.byId.has(id)) return;
   const live = store.live.find((l) => l.id === id);
-  const src = live && b.sources.find((x) => x.source === live.source);
+  const src = live && b.all.find((x) => x.source === live.source);
   if (!live || !src) return;
   const item: Item = { ...src, entry: poolEntry(src.entry, id, "web"), createdAt: Date.now() };
   store.added.push({ entry: item.entry, source: src.source });
@@ -324,7 +341,8 @@ async function mockFetch(path: string, init?: RequestInit): Promise<Response> {
       creditRemainingUsd: STATE === "broke" ? 0 : Math.max(0, 95 - spent),
     } satisfies StatusResponse);
   }
-  if (parts[1] === "summary" && parts[2] === "community") return json(summarize(b));
+  if (parts[1] === "summary" && parts[2] === "versions") return json(versions(b));
+  if (parts[1] === "summary" && parts[2] === "community") return json(summarize(b, u.searchParams.get("version") ?? CURRENT_VERSION));
   if (parts[1] === "matches" && parts.length === 2 && method === "POST") {
     if (STATE === "broke") return apiError("budget_exhausted", "The arena’s OpenRouter credit is used up.", 402);
     if (STATE === "busy") return apiError("busy", "Every arena slot is busy and the queue is full.", 503);
@@ -332,10 +350,13 @@ async function mockFetch(path: string, init?: RequestInit): Promise<Response> {
     const condition = req.condition ?? DEFAULT_PUBLIC_CONDITION;
     if (!(condition in PUBLIC_CONDITIONS) || (req.map !== "random" && !MAP_IDS.includes(req.map))) return apiError("bad_request", "Unknown map or condition.", 400);
     const map = req.map === "random" ? MAP_IDS[Math.floor(Math.random() * MAP_IDS.length)] : req.map;
-    const sameRule = b.sources.filter((x) => x.entry.condition === condition);
+    const decoder = req.decoder ?? DEFAULT_PUBLIC_DECODER;
+    if (!(decoder in PUBLIC_DECODERS)) return apiError("bad_request", "Unknown decoder.", 400);
+    const want = `${SIM_VERSION}:p2-${decoder}`;
+    const sameRule = b.all.filter((x) => versionOf(x.digest) === want && x.entry.condition === condition);
     const options = sameRule.filter((x) => x.entry.map === map);
     const pick = options.length ? options : sameRule;
-    if (!pick.length) return apiError("bad_request", `The mock has no local log for “${condition}” in runs/.`, 400);
+    if (!pick.length) return apiError("bad_request", `The mock has no local ${want} log for “${condition}” in runs/.`, 400);
     const src = pick[Math.floor(Math.random() * pick.length)];
     const id = `m${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
     store.live.push({ id, source: src.source, createdAt: Date.now() });
@@ -345,7 +366,8 @@ async function mockFetch(path: string, init?: RequestInit): Promise<Response> {
   if (parts[1] === "matches" && parts.length === 2) {
     const limit = Math.max(1, Math.min(100, Number(u.searchParams.get("limit") ?? 50) || 50));
     const at = Number(u.searchParams.get("cursor") ?? 0) || 0;
-    const all = pool(b);
+    const v = u.searchParams.get("version");
+    const all = v ? pool(b).filter((x) => versionOf(x.digest) === v) : pool(b);
     return json({ matches: all.slice(at, at + limit).map((x) => x.entry), nextCursor: at + limit < all.length ? String(at + limit) : null });
   }
   if (parts[1] === "matches" && parts[2] && parts.length === 3) {

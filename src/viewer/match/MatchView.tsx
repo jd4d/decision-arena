@@ -4,7 +4,7 @@ import { MAPS } from "../../sim/maps.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
 import { getMatchEntry } from "../lib/api.ts";
 import { loadLog, NotFound, useAsync } from "../lib/data.ts";
-import { clock, conditionLabel, ORIGIN_NOTE, originTag } from "../lib/format.ts";
+import { clock, conditionLabel, ORIGIN_NOTE, originTag, versionLabel } from "../lib/format.ts";
 import { liveHref, MATCHES_HREF, matchHref, replaceHash, RESULTS_HREF } from "../lib/router.ts";
 import { distinctColors, shortLabel, type TeamColor } from "../lib/theme.ts";
 import { buildModel, type MatchModel } from "../replay/model.ts";
@@ -185,7 +185,7 @@ export function MatchStage({ model, player, runId, matchId, mode, origin, arenaO
               </span>
             </span>
           )}
-          <span className="badge" title="Simulation and protocol versions recorded in the log">{h.sim} · {h.protocol}</span>
+          <span className="badge" title={`Simulation ${h.sim}, protocol ${h.protocol} (recorded in the log)`}>{versionLabel(`${h.sim}:${h.protocol}`)} · {h.sim}</span>
           <button className="btn btn--ghost btn--sm" onClick={copyLink}>{copied ? "Link copied" : live ? "Copy live link" : "Copy link at time"}</button>
         </div>
       </div>

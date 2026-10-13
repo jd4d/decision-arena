@@ -11,12 +11,15 @@ import type { ModelKey } from "../src/agents/models.ts";
 import { runMatch, type TickInfo } from "../src/runner/engine.ts";
 import { parseLatency, type LatencyMode } from "../src/runner/latency.ts";
 import { parseLog, type HeaderRec, type LogRec, type ResultRec } from "../src/runner/log.ts";
-import { PROTOCOL_VERSION } from "../src/protocol/v1.ts";
+import { DEFAULT_DECODER, DECODERS, protocolLabel, type Decoder } from "../src/protocol/v2.ts";
 import { SIM_VERSION } from "../src/sim/tuning.ts";
-import { insertMatch, logPath, readSummary, type MatchRow } from "./db.ts";
+import { insertMatch, logPath, type MatchRow } from "./db.ts";
 import { lobbyStub, logKey, MATCH_CAP_USD, type Env, type RoomSpec } from "./env.ts";
 
 type Phase = "queued" | "starting" | "running" | "done" | "failed";
+/** The spec's answer method; specs stored before answer methods existed use the default. */
+const decoderOf = (spec: RoomSpec): Decoder => ((DECODERS as readonly string[]).includes(spec.decoder ?? "") ? (spec.decoder as Decoder) : DEFAULT_DECODER);
+
 type RoomState = { spec: RoomSpec; phase: Phase; position: number; entry?: MatchIndexEntry; result?: ResultRec; error?: string };
 
 const FLUSH_MS = 100;
@@ -187,7 +190,7 @@ export class MatchRoom extends DurableObject<Env> {
     const { spec } = rs;
     const key = this.env.OPENROUTER_API_KEY;
     if (!key) return this.fail(rs, "The server has no model key configured.", 0, 0);
-    const agents = spec.order.map((k) => fetchModelAgent(k as ModelKey, key)) as [FetchModelAgent, FetchModelAgent];
+    const agents = spec.order.map((k) => fetchModelAgent(k as ModelKey, key, undefined, decoderOf(spec))) as [FetchModelAgent, FetchModelAgent];
 
     let extra = 0;
     for (let round = 1; round <= WARM_ROUNDS; round++) {
@@ -201,7 +204,7 @@ export class MatchRoom extends DurableObject<Env> {
 
     const condition = spec.condition as PublicCondition;
     let latency: LatencyMode;
-    try { latency = await latencyForCondition(this.env.DB, condition, spec.order as [string, string]); }
+    try { latency = latencyForCondition(condition); }
     catch (e) { return this.fail(rs, (e as Error).message, 0, extra); }
     const { records, result } = await runMatch(
       {
@@ -259,7 +262,7 @@ export class MatchRoom extends DurableObject<Env> {
       await insertMatch(this.env.DB, {
         id: rs.spec.matchId, created_at: rs.spec.createdAt, finished_at: Date.now(), status: "failed", map: rs.spec.map, condition: rs.spec.condition,
         seed: rs.spec.seed, agents: JSON.stringify(rs.spec.order.map((id) => ({ id }))), winner: null, reason: message, ticks: 0, hp: null, highlights: null,
-        cost, extra_cost: extra, sim: SIM_VERSION, protocol: PROTOCOL_VERSION, digest: null,
+        cost, extra_cost: extra, sim: SIM_VERSION, protocol: protocolLabel(decoderOf(rs.spec)), digest: null,
       });
     } catch (e) {
       console.error("failed-row insert", (e as Error).message);
@@ -270,31 +273,7 @@ export class MatchRoom extends DurableObject<Env> {
   }
 }
 
-/** Quantile samples (ms) from a 25 ms latency histogram; the last bin is overflow and is treated as its lower edge. */
-function histogramSamples(h: { binMs: number; counts: number[] } | undefined, n = 400): number[] {
-  if (!h) return [];
-  const total = h.counts.reduce((a, b) => a + b, 0);
-  if (total < 200) return [];
-  const out: number[] = [];
-  let bin = 0, cum = h.counts[0];
-  for (let i = 0; i < n; i++) {
-    const target = ((i + 0.5) / n) * total;
-    while (cum < target && bin < h.counts.length - 1) cum += h.counts[++bin];
-    out.push(bin === h.counts.length - 1 ? bin * h.binMs : bin * h.binMs + h.binMs / 2);
-  }
-  return out;
-}
-
-/**
- * Game-time latency rule for a public condition. "swap:<f>" gives each slot the OTHER model's real-latency
- * distribution (sampled from the pool's recorded histograms) times f.
- */
-export async function latencyForCondition(db: D1Database, condition: PublicCondition, order: [string, string]): Promise<LatencyMode> {
-  const spec = PUBLIC_CONDITIONS[condition].latency;
-  if (!spec.startsWith("swap:")) return parseLatency(spec);
-  const factor = Number(spec.split(":")[1] ?? 1);
-  const hist = (await readSummary(db))?.latencyHistogram ?? {};
-  const [a, b] = [histogramSamples(hist[order[1]]), histogramSamples(hist[order[0]])];
-  if (!a.length || !b.length) throw new Error("Not enough recorded latency data for swapped latency yet.");
-  return { mode: "resampled", traces: [a.map((x) => x * factor), b.map((x) => x * factor)], label: `swap-${factor}` };
+/** Game-time latency rule for a public condition (real or equal latency). */
+export function latencyForCondition(condition: PublicCondition): LatencyMode {
+  return parseLatency(PUBLIC_CONDITIONS[condition].latency);
 }

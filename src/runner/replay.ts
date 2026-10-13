@@ -32,7 +32,7 @@ export function createReplay(records: LogRec[]): Replay {
 
   const rp: Replay = {
     header, result, decisions, appliedAt, checks,
-    world: createWorld(header.map, header.seed),
+    world: createWorld(header.map, header.seed, header.sim),
     mismatches: [],
     advance() {
       const w = rp.world;
@@ -47,7 +47,7 @@ export function createReplay(records: LogRec[]): Replay {
       return !w.over;
     },
     reset() {
-      rp.world = createWorld(header.map, header.seed);
+      rp.world = createWorld(header.map, header.seed, header.sim);
     },
     seek(tick: number) {
       if (tick < rp.world.tick) rp.reset();

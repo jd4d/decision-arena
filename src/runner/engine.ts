@@ -6,7 +6,7 @@ import type { Agent, DecisionResult } from "../agents/types.ts";
 import { observe } from "../sim/observe.ts";
 import { ROUND_TICKS, SIM_VERSION, TICK_HZ } from "../sim/tuning.ts";
 import { checksum, createWorld, setOrders, step } from "../sim/world.ts";
-import { PROTOCOL_VERSION } from "../protocol/v1.ts";
+import { CURRENT_PROTOCOL } from "../protocol/v2.ts";
 import { LOG_VERSION, type DecisionRec, type HeaderRec, type LogRec, type ResultRec, type SlotStats } from "./log.ts";
 import { conditionName, ERROR_MIN_MS, makeLatencyFn, msToTicks, type LatencyMode } from "./latency.ts";
 
@@ -52,9 +52,12 @@ export async function runMatch(
   const t0 = performance.now();
   const records: LogRec[] = [];
   const emit = (r: LogRec) => { records.push(r); opts.onRecord?.(r); };
+  // Model agents carry the protocol label they decode with; both sides must agree. Bot-only matches use the live label.
+  const labels = [...new Set(spec.agents.map((a) => a.info.protocol).filter((p): p is string => !!p))];
+  if (labels.length > 1) throw new Error(`agents disagree on protocol: ${labels.join(", ")}`);
   const header: HeaderRec = {
     k: "header", v: LOG_VERSION, runId: spec.runId, matchId: spec.matchId, condition: spec.condition ?? conditionName(spec.latency),
-    createdAt: new Date().toISOString(), sim: SIM_VERSION, protocol: PROTOCOL_VERSION, map: spec.map, seed: spec.seed,
+    createdAt: new Date().toISOString(), sim: SIM_VERSION, protocol: labels[0] ?? CURRENT_PROTOCOL, map: spec.map, seed: spec.seed,
     tickHz: TICK_HZ, roundTicks: ROUND_TICKS, latency: spec.latency,
     agents: spec.agents.map((a, i) => ({ ...a.info, slot: i as 0 | 1 })),
   };

@@ -1,5 +1,6 @@
 import { useMemo, useState, type CSSProperties } from "react";
-import { DEFAULT_PUBLIC_CONDITION, PUBLIC_CONDITIONS, type PublicCondition } from "../../api/contract.ts";
+import { DEFAULT_PUBLIC_CONDITION, DEFAULT_PUBLIC_DECODER, PUBLIC_CONDITIONS, PUBLIC_DECODERS, type PublicCondition, type PublicDecoder } from "../../api/contract.ts";
+import { SIM_VERSION } from "../../sim/tuning.ts";
 import { MAP_IDS, MAPS } from "../../sim/maps.ts";
 import { MapThumb } from "../browser/MapThumb.tsx";
 import { ApiFailure, createMatch, getCommunitySummary, useStatus } from "../lib/api.ts";
@@ -18,6 +19,7 @@ export function RunPage() {
   const { status } = useStatus();
   const [map, setMap] = useState<string>("random");
   const [rule, setRule] = useState<RuleChoice>("random");
+  const [decoder, setDecoder] = useState<PublicDecoder>(DEFAULT_PUBLIC_DECODER);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiFailure | null>(null);
   const pool = useAsync(() => getCommunitySummary().catch(() => null), []);
@@ -40,10 +42,10 @@ export function RunPage() {
     setBusy(true);
     setErr(null);
     // Snapshot the pool results first, so the end screen can show how this match moved them.
-    const beforeP = getCommunitySummary().catch(() => null);
+    const beforeP = getCommunitySummary(`${SIM_VERSION}:p2-${decoder}`).catch(() => null);
     try {
       const condition = rule === "random" ? RULES[Math.floor(Math.random() * RULES.length)] : rule;
-      const res = await createMatch({ map, condition });
+      const res = await createMatch({ map, condition, decoder });
       const before = await Promise.race([beforeP, new Promise<null>((r) => setTimeout(() => r(null), 2500))]);
       saveLaunch(res.matchId, { liveUrl: res.liveUrl, queuePosition: res.queuePosition, map, condition, createdAt: Date.now(), before });
       location.hash = liveHref(res.matchId);
@@ -95,6 +97,21 @@ export function RunPage() {
         <RuleCards rule={rule} onChange={setRule} medians={medians} />
       </section>
 
+      <section className="step" aria-labelledby="step-decoder">
+        <h2 id="step-decoder">Pick an answer method</h2>
+        <p className="step__note">How each model’s probabilities become its tank’s actions. Results for each method are kept separate.</p>
+        <div className="mapopts ruleopts decoderopts" role="radiogroup" aria-labelledby="step-decoder">
+          {(Object.keys(PUBLIC_DECODERS) as PublicDecoder[]).map((d, i) => (
+            <label key={d} className={`mapopt ${decoder === d ? "is-on" : ""}`} style={{ "--i": i } as CSSProperties}>
+              <input type="radio" name="decoder" value={d} checked={decoder === d} onChange={() => setDecoder(d)} className="sr-only" />
+              <span className="mapopt__name">{PUBLIC_DECODERS[d].label}{d === DEFAULT_PUBLIC_DECODER ? <span className="ruleviz__badge decoder__badge">default</span> : null}</span>
+              <span className="mapopt__sub">{PUBLIC_DECODERS[d].blurb}</span>
+              <span className="mapopt__check" aria-hidden />
+            </label>
+          ))}
+        </div>
+      </section>
+
       <section className="go" aria-label="Start">
         <div className="go__sides">
           <svg viewBox="0 0 24 24" aria-hidden><path d="M7 7h11l-3-3M17 17H6l3 3" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -107,6 +124,8 @@ export function RunPage() {
             <span>{map === "random" ? "Random map" : MAPS[map].name}</span>
             <span className="go__dot">·</span>
             <span>{rule === "random" ? "Random latency rule" : conditionLabel(rule)}</span>
+            <span className="go__dot">·</span>
+            <span>{PUBLIC_DECODERS[decoder].label}</span>
           </div>
           <button className={`btn btn--cta ${busy ? "is-busy" : ""}`} onClick={start} disabled={busy || outOfFuel} aria-busy={busy}>
             {busy ? <><span className="spinner spinner--xs" /> Starting…</> : <>Start match <span aria-hidden>→</span></>}
@@ -130,11 +149,10 @@ function ruleDelays(c: PublicCondition, medians: Medians): number[] {
   const spec = PUBLIC_CONDITIONS[c].latency;
   const [kind, v] = spec.split(":");
   if (kind === "fixed") return real.map(() => Number(v));
-  if (kind === "swap") return [...real].reverse().map((x) => x * Number(v));
   return real.map((x) => x * Number(v));
 }
 
-/** First-class latency-rule choice, styled like the map cards: Random (preselected) plus the six rules. */
+/** First-class latency-rule choice, styled like the map cards: Random (preselected) plus the two rules. */
 function RuleCards({ rule, onChange, medians }: { rule: RuleChoice; onChange: (r: RuleChoice) => void; medians: Medians }) {
   const max = 1200;
   const names = medians?.map((m) => m.label) ?? ["Jev", "Microsoft"];

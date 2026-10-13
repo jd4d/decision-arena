@@ -25,12 +25,14 @@ type Props = {
 type After = { summary: RunSummary; synthesized: boolean };
 
 /** The pool summary including this match. The server's aggregate may lag a moment behind "done". */
-async function fetchAfter(entry: MatchIndexEntry, before: RunSummary | null, alive: () => boolean): Promise<After> {
+async function fetchAfter(entry: MatchIndexEntry, before0: RunSummary | null, alive: () => boolean): Promise<After> {
+  // Compare within the match's own version (sim + protocol); a "before" from another version can't show deltas.
+  const before = before0 && entry.version && `${before0.sim}:${before0.protocol}` !== entry.version ? null : before0;
   const want = before ? totalMatches(before) + 1 : 0;
   let last: RunSummary | null = null;
   for (let i = 0; i < 4 && alive(); i++) {
     try {
-      last = await getCommunitySummary();
+      last = await getCommunitySummary(entry.version);
       if (!before || totalMatches(last) >= want) return { summary: last, synthesized: false };
     } catch { /* retry */ }
     await new Promise((r) => setTimeout(r, 1200));

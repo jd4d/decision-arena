@@ -32,8 +32,8 @@ export const titleCase = (s: string) => s.replace(/(^|[\s_-])(\w)/g, (_, a: stri
 
 export const driveLabel = (d: string) => d.replace("_", " ");
 
-/** Short human condition name. The six public rules use their contract labels ("scaled-1" -> "Real latency",
- *  "fixed-250" -> "Equal latency (250 ms)", "scaled-4" -> "Frantic game (×4)"); anything else is derived from its id. */
+/** Short human condition name. The public rules use their contract labels ("scaled-1" -> "Real latency",
+ *  "fixed-250" -> "Equal latency (250 ms)"); anything else (older logs) is derived from its id. */
 export function conditionLabel(c: string): string {
   if (c in PUBLIC_CONDITIONS) return PUBLIC_CONDITIONS[c as PublicCondition].label;
   const [kind, v] = c.split("-");
@@ -70,7 +70,7 @@ export function compareConditions(a: string, b: string): number {
   return ka - kb || va - vb || a.localeCompare(b);
 }
 
-/** One plain line on what a condition means for the match (the contract blurb for the six public rules). */
+/** One plain line on what a condition means for the match (the contract blurb for the public rules). */
 export function conditionBlurb(c: string): string {
   if (c in PUBLIC_CONDITIONS) return PUBLIC_CONDITIONS[c as PublicCondition].blurb;
   const [kind, v] = c.split("-");
@@ -91,5 +91,14 @@ export function ptsDelta(d: number): string {
 }
 
 /** Provenance tag for a pool match: seed matches (imported from the local t1 runs) are marked; site matches aren't. */
-export const originTag = (origin: string | undefined) => (origin === "t1-local" ? "seed · t1" : null);
-export const ORIGIN_NOTE = "Seed match from the t1 tournament runs, played locally rather than from this site";
+/** Human label for a results version ("sim-3:p2-draw" -> "p2 · weighted draw"). Unknown protocols show as-is. */
+const DECODER_NAMES: Record<string, string> = { draw: "weighted draw", scaled: "confidence-scaled" };
+export function versionLabel(version: string): string {
+  const protocol = version.split(":")[1] ?? version;
+  const [p, decoder] = protocol.split("-");
+  if (decoder) return `${p} · ${DECODER_NAMES[decoder] ?? decoder}`;
+  return p === "p1" ? "p1 · first version" : p;
+}
+
+export const originTag = (origin: string | undefined) => (origin === "t1-local" ? "seed" : null);
+export const ORIGIN_NOTE = "Seed match from the local seed tournament, played locally rather than from this site";

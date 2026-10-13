@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { DEFAULT_PUBLIC_CONDITION } from "../../api/contract.ts";
 import type { MatchIndexEntry } from "../../analysis/schema.ts";
+import { CURRENT_PROTOCOL } from "../../protocol/v2.ts";
 import { MAPS } from "../../sim/maps.ts";
+import { SIM_VERSION } from "../../sim/tuning.ts";
 import { ArenaCanvas } from "../arena/ArenaCanvas.tsx";
-import { getCommunitySummary, listMatches, useStatus } from "../lib/api.ts";
+import { listMatches, useStatus } from "../lib/api.ts";
 import { loadLog, useAsync } from "../lib/data.ts";
 import { FEATURE_BUCKET_MS, FEATURE_POOL, featureBucket, pickFeatured } from "../lib/featured.ts";
-import { compareConditions, conditionLabel, mmss, ms, ORIGIN_NOTE, originTag, pct, reasonLabel } from "../lib/format.ts";
+import { conditionLabel, mmss, ms, ORIGIN_NOTE, originTag, pct, reasonLabel } from "../lib/format.ts";
 import { MATCHES_HREF, poolMatchHref, RESULTS_HREF } from "../lib/router.ts";
-import { agentRecord, leader, poolStory, shortName, totalMatches } from "../lib/summary.ts";
+import { agentRecord, shortName, totalMatches } from "../lib/summary.ts";
+import { p1Pool, p2Pools, pooledRecord, type VersionPool } from "../lib/pools.ts";
 import { canonicalOrder, distinctColors, shortLabel, type TeamColor } from "../lib/theme.ts";
 import { teamStyle } from "../match/BrainPanel.tsx";
 import { buildModel, type MatchModel } from "../replay/model.ts";
@@ -51,7 +54,7 @@ export function HomePage() {
       <section className="how" aria-labelledby="how-h">
         <h2 id="how-h" className="sr-only">How it works</h2>
         {[
-          ["Pick", "Choose a map and a latency rule, or leave both on Random. Sides and seed are drawn at random."],
+          ["Pick", "Choose a map, a latency rule and an answer method, or leave them on their defaults. Sides and seed are drawn at random."],
           ["Watch", "Both models decide in real time. Ghosts show the enemy as each model last saw it."],
           ["Compare", "Your match joins the pool. See how it moved the win rates."],
         ].map(([t, d], i) => (
@@ -72,8 +75,8 @@ export function HomePage() {
 export function SiteFooter() {
   return (
     <footer className="sitefoot">
-      <span>Decision Arena · sim-2 · protocol p1</span>
-      <span>One pool: the t1 tournament, run locally, plus every match run from this site on Cloudflare in eastern North America. Each match is tagged with where it ran.</span>
+      <span>Decision Arena · {SIM_VERSION} · protocol {CURRENT_PROTOCOL}</span>
+      <span>One pool: a seed tournament, run locally, plus every match run from this site on Cloudflare in eastern North America. Each match is tagged with where it ran.</span>
       <span className="sitefoot__links">
         <a href="#/methodology">Methodology</a>
         <a href={REPO_URL} target="_blank" rel="noreferrer">Source on GitHub ↗</a>
@@ -197,18 +200,17 @@ function AttractLoop({ model }: { model: MatchModel }) {
 
 // ---------------------------------------------------------------- compact pool scoreboard
 
-/** Win-rate gap from 50% below which a non-significant lead reads as "too close to call". */
-const EVEN = 0.03;
+const EQUAL = "fixed-250";
+
+type Groups = { p2: VersionPool[]; p1: VersionPool | null };
 
 function PoolBoard() {
-  const st = useAsync(() => getCommunitySummary().catch(() => null), []);
+  const st = useAsync(async (): Promise<Groups> => ({ p2: await p2Pools(), p1: await p1Pool() }), []);
   if (st.status !== "ready") return <section className="board board--loading" aria-busy="true"><div className="spinner" /></section>;
-  const s = st.data;
-  if (!s) return null;
-  const n = totalMatches(s);
-  const agents = canonicalOrder(s.agents);
-  const colors = distinctColors(agents.map((a) => a.id));
-  if (n === 0) {
+  const { p2, p1 } = st.data;
+  // Every version's matches count toward the overall record; the groups on the right keep them apart.
+  const all = p1 ? [...p2, p1] : p2;
+  if (!all.length) {
     return (
       <section className="board" aria-labelledby="board-h">
         <header className="board__head">
@@ -221,34 +223,44 @@ function PoolBoard() {
       </section>
     );
   }
-  const story = poolStory(s, agents);
+  const n = all.reduce((t, p) => t + totalMatches(p.s), 0);
+  const agents = canonicalOrder(all[0].s.agents);
+  const colors = distinctColors(agents.map((a) => a.id));
   const REAL = DEFAULT_PUBLIC_CONDITION;
-  const hasReal = totalMatches(s, REAL) > 0;
-  // The big scoreboard pools every match in the pool, across all latency rules (wins ÷ decisive matches).
-  const lead = leader(s, agents);
-  const headline = !lead || (!lead.clear && lead.rate.p - 0.5 < EVEN)
-    ? "Dead even across every match"
-    : `${shortName(lead.label)} ${lead.clear ? "leads" : "edges ahead"} across every match`;
-  const control = story.control;
-  const ctl = story.decisions;
-  const facts: string[] = [];
-  if (control && ctl) facts.push(`${conditionLabel(control)}: ${shortName(ctl.label)} ${pct(ctl.rate.p)} (95% CI ${pct(ctl.rate.lo)}–${pct(ctl.rate.hi)}).`);
-  const medians = agents.filter((a) => Number.isFinite(story.p50[a.id])).map((a) => `${shortName(a.label)} ${ms(story.p50[a.id])}`);
-  if (medians.length) facts.push(`Median response: ${medians.join(", ")}.`);
-  const conds = s.conditions.filter((c) => c.matches > 0).map((c) => c.condition).sort(compareConditions);
+  const recs = agents.map((a) => pooledRecord(all, a.id));
+  const medians = agents.map((a, i) => (Number.isFinite(recs[i].p50) ? `${shortName(a.label)} ${ms(recs[i].p50)}` : null)).filter(Boolean);
+  const cols = [EQUAL, REAL];
+  // Newest methodology first. Each group is a header row plus one row per pool (p2: one per answer method).
+  const groups = [
+    { key: "p2", title: "P2 · newest methodology", rows: p2 },
+    { key: "p1", title: "P1 · first version methodology", rows: p1 ? [p1] : [] },
+  ].filter((g) => g.rows.length);
+  // `named` = the group has several rows (p2's answer methods), so each bar names its row; a single-row group (p1) doesn't.
+  const bar = (p: VersionPool, c: string, named: boolean) => {
+    const [ra, rb] = agents.slice(0, 2).map((a) => agentRecord(p.s, a.id, c));
+    const dec = ra.wins + ra.losses;
+    const share = dec ? ra.wins / dec : 0.5;
+    const m = totalMatches(p.s, c);
+    return (
+      <div key={`${p.id}/${c}`} className={`split ${c === REAL ? "is-real" : ""}`} title={`${p.label} · ${conditionLabel(c)}: ${agents[0].label} ${ra.wins}, ${agents[1]?.label} ${rb?.wins ?? 0}, ${ra.draws} draws`}>
+        <div className="split__label"><span>{named ? p.label : ""}</span><small>{m ? `${m.toLocaleString()} matches` : "no matches"}</small></div>
+        <div className="split__bar" style={{ "--a": colors[0].main, "--b": colors[1]?.main } as CSSProperties}>
+          <i style={{ width: `${share * 100}%` }}><b>{dec ? pct(share) : ""}</b></i>
+          <i style={{ width: `${(1 - share) * 100}%` }}><b>{dec ? pct(1 - share) : ""}</b></i>
+        </div>
+      </div>
+    );
+  };
   return (
     <section className="board" aria-labelledby="board-h">
       <header className="board__head">
         <div>
-          <div className="kicker">Scoreboard · {n.toLocaleString()} match{n === 1 ? "" : "es"} in the pool</div>
-          <h2 id="board-h">{headline}</h2>
-          {story.tagline && (
-            <p className="board__why">
-              {control && <span className="board__ctl">Equal-latency control</span>}
-              {story.tagline}.
-            </p>
-          )}
-          {facts.length > 0 && <p>{facts.join(" ")} Win rate is wins ÷ decisive matches.</p>}
+          <div className="kicker">Scoreboard · {n.toLocaleString()} matches · p1 + p2</div>
+          <h2 id="board-h">How the two models compare</h2>
+          <p>
+            Every match from both methodology versions; new matches use the newest one and join these totals.
+            {medians.length > 0 && <> Median response: {medians.join(", ")}.</>} Win rate is wins ÷ decisive matches.
+          </p>
         </div>
         <div className="board__links">
           <a className="btn btn--sm" href={RESULTS_HREF}>Full results →</a>
@@ -256,9 +268,8 @@ function PoolBoard() {
       </header>
       <div className="board__grid">
         {agents.map((a, i) => {
-          const r = agentRecord(s, a.id);
-          const real = hasReal ? agentRecord(s, a.id, REAL).winRate : null;
-          const eq = control ? agentRecord(s, a.id, control).winRate : null;
+          const r = recs[i];
+          const real = pooledRecord(all, a.id, REAL).winRate, eq = pooledRecord(all, a.id, EQUAL).winRate;
           return (
             <div key={a.id} className="board__agent" style={{ ...teamStyle(colors[i]), "--i": i } as CSSProperties}>
               <div className="board__name">{a.label}</div>
@@ -267,27 +278,19 @@ function PoolBoard() {
               <dl>
                 <div><dt>Record</dt><dd>{r.wins}–{r.losses}–{r.draws}</dd></div>
                 <div><dt>Real latency</dt><dd>{real ? pct(real.p) : "—"}</dd></div>
-                {control && <div><dt>Equal latency</dt><dd>{eq ? pct(eq.p) : "—"}</dd></div>}
-                <div><dt>Median</dt><dd>{ms(story.p50[a.id])}</dd></div>
+                <div><dt>Equal latency</dt><dd>{eq ? pct(eq.p) : "—"}</dd></div>
+                <div><dt>Median</dt><dd>{ms(r.p50)}</dd></div>
               </dl>
             </div>
           );
         })}
-        <div className={`board__conds ${conds.length > 3 ? "is-two" : ""}`} style={{ "--rows": Math.ceil(conds.length / 2) } as CSSProperties}>
-          {conds.map((c) => {
-            const [ra, rb] = agents.slice(0, 2).map((a) => agentRecord(s, a.id, c));
-            const dec = ra.wins + ra.losses;
-            const share = dec ? ra.wins / dec : 0.5;
-            return (
-              <div key={c} className={`split ${c === REAL ? "is-real" : ""}`} title={`${conditionLabel(c)}: ${agents[0].label} ${ra.wins}, ${agents[1]?.label} ${rb?.wins ?? 0}, ${ra.draws} draws`}>
-                <div className="split__label"><span>{conditionLabel(c)}</span><small>{totalMatches(s, c).toLocaleString()} matches</small></div>
-                <div className="split__bar" style={{ "--a": colors[0].main, "--b": colors[1]?.main } as CSSProperties}>
-                  <i style={{ width: `${share * 100}%` }}><b>{dec ? pct(share) : ""}</b></i>
-                  <i style={{ width: `${(1 - share) * 100}%` }}><b>{dec ? pct(1 - share) : ""}</b></i>
-                </div>
-              </div>
-            );
-          })}
+        <div className="board__table" role="table" aria-label="Win share by methodology and latency rule">
+          {groups.map((g, gi) => [
+            <div key={`g/${g.key}`} className={`board__group ${gi === 0 ? "is-first" : ""}`} role="rowheader">{g.title}</div>,
+            <div key={`h/${g.key}/eq`} className="board__colh" role="columnheader">Equal latency</div>,
+            <div key={`h/${g.key}/real`} className="board__colh is-real" role="columnheader">Real latency</div>,
+            ...g.rows.flatMap((p) => cols.map((c) => bar(p, c, g.rows.length > 1))),
+          ])}
         </div>
       </div>
     </section>

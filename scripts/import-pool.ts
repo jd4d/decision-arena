@@ -1,20 +1,23 @@
 // Prepare locally run matches for import into the single public pool (seed data).
-// Includes every runs/<run>/matches/*.jsonl that is: current SIM_VERSION and PROTOCOL_VERSION, Jev vs Microsoft (model agents),
+// Includes every runs/<run>/matches/*.jsonl that is: an allowed version (default: the current SIM_VERSION and protocol;
+// --versions sim-3:p2-draw,sim-3:p2-scaled to import several, each summarized separately), Jev vs Microsoft (model agents),
 // a public condition, and not aborted. Writes .import/pool/<id>.jsonl (log copies for R2) and .import/pool/rows.sql
 // (D1 inserts with origin 't1-local' = "run locally"), plus a SQL tail that resets the summary fold so the pool is re-summarized.
 // Imported rows carry cost 0: the site didn't pay for them, so they don't count against BUDGET_USD.
 // Per-match cost statistics still come from each log's digest.
-// Usage: node scripts/import-t1.ts
+// Usage: node scripts/import-pool.ts [--versions <sim>:<protocol>,...]
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseLog, type HeaderRec, type LogRec } from "../src/runner/log.ts";
 import { digestMatch, indexEntry, toMatch } from "../src/analysis/aggregate.ts";
 import { hashString } from "../src/sim/rng.ts";
 import { SIM_VERSION } from "../src/sim/tuning.ts";
-import { PROTOCOL_VERSION } from "../src/protocol/v1.ts";
+import { CURRENT_PROTOCOL } from "../src/protocol/v2.ts";
 import { PUBLIC_CONDITIONS } from "../src/api/contract.ts";
 
 const root = join(import.meta.dirname, "..");
+const vi = process.argv.indexOf("--versions");
+const VERSIONS = new Set(vi >= 0 ? process.argv[vi + 1].split(",") : [`${SIM_VERSION}:${CURRENT_PROTOCOL}`]);
 const out = join(root, ".import", "pool");
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
@@ -36,7 +39,7 @@ for (const [runId, path] of files) {
   const m = toMatch(recs);
   if (!m || m.result.reason === "aborted") continue;
   const h = recs[0] as HeaderRec;
-  if (h.sim !== SIM_VERSION || h.protocol !== PROTOCOL_VERSION) continue;
+  if (!VERSIONS.has(`${h.sim}:${h.protocol}`)) continue;
   if (!Object.hasOwn(PUBLIC_CONDITIONS, h.condition)) continue;
   if (h.agents.map((a) => a.id).sort().join() !== "jev,msd1") continue;
   counts[`${runId} ${h.condition}`] = (counts[`${runId} ${h.condition}`] ?? 0) + 1;

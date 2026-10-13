@@ -38,4 +38,5 @@ export type RoomSpec = {
   condition: string; // PublicCondition
   order: [string, string]; // model keys by slot
   createdAt: number;
+  decoder?: string; // PublicDecoder; missing on specs stored before answer methods existed = the default
 };

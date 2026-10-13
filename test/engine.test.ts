@@ -169,7 +169,7 @@ test("latency modes: scaled factor 2 doubles delay; fixed ignores realMs", async
   assert.deepEqual([...new Set(decisions(rs.records, 1).map((d) => d.applyTick - d.issueTick))], [msToTicks(600)]);
 });
 
-test("an errored decision keeps previous orders and costs at least ERROR_MIN_MS", async () => {
+test("an errored decision issues no new step (the last one finishes) and costs at least ERROR_MIN_MS", async () => {
   const A: Action = { drive: "turn_right", turret: 0.3, fire: false };
   const a = fake("a", (n) =>
     n === 0 ? { action: A, realMs: 100 }
@@ -183,7 +183,9 @@ test("an errored decision keeps previous orders and costs at least ERROR_MIN_MS"
   assert.equal(err.action, null);
   assert.ok(err.effMs >= ERROR_MIN_MS);
   assert.ok(err.applyTick - err.issueTick >= msToTicks(ERROR_MIN_MS));
-  assert.deepEqual(a.obs[2].self.orders, A, "orders from before the error must persist");
+  // sim-3: the error adds nothing; A's 30° turn step (0.2 s) has finished by the time the next decision is issued.
+  assert.deepEqual(a.obs[2].self.orders, { drive: "stop", turret: 0, fire: false }, "no new step after an error");
+  assert.deepEqual(a.obs[2].self.stepLeft, { drive: 0, turretDeg: 0 });
   assert.equal(result.stats[0].errors, 1);
   assert.equal(result.stats[1].errors, 0);
   // fixed mode also floors errors at ERROR_MIN_MS

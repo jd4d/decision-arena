@@ -4,6 +4,7 @@
 // exactly what this measures.
 import type { Observation } from "../sim/observe.ts";
 import type { Agent, DecisionResult } from "./types.ts";
+import { DEFAULT_DECODER, protocolLabel, type Decoder } from "../protocol/v2.ts";
 import { DECISION_TIMEOUT_MS, DECISIONS_URL, decisionBody, httpError, MODELS, toDecisionResult, warmupBody, type ModelKey, type RawResponse } from "./models.ts";
 
 export async function postDecisionFetch(apiKey: string, body: unknown, timeoutMs = DECISION_TIMEOUT_MS): Promise<RawResponse> {
@@ -31,21 +32,21 @@ export async function postDecisionFetch(apiKey: string, body: unknown, timeoutMs
 export type WarmResult = { ms: number; cost: number; error?: string };
 export type FetchModelAgent = Agent & { warm(): Promise<WarmResult> };
 
-export function fetchModelAgent(key: ModelKey, apiKey: string, timeoutMs = DECISION_TIMEOUT_MS): FetchModelAgent {
+export function fetchModelAgent(key: ModelKey, apiKey: string, timeoutMs = DECISION_TIMEOUT_MS, decoder: Decoder = DEFAULT_DECODER): FetchModelAgent {
   const { model, label } = MODELS[key];
   const warm = async (): Promise<WarmResult> => {
     const r = await postDecisionFetch(apiKey, warmupBody(model), timeoutMs);
     return { ms: r.ms, cost: Number(r.json?.usage?.cost ?? 0) || 0, error: r.error };
   };
   return {
-    info: { id: key, label, kind: "model", model },
+    info: { id: key, label, kind: "model", model, protocol: protocolLabel(decoder) },
     warm,
     async warmup() {
       const r = await warm();
       if (r.error) throw new Error(r.error);
     },
     async decide(o: Observation): Promise<DecisionResult> {
-      return toDecisionResult(await postDecisionFetch(apiKey, decisionBody(model, o), timeoutMs));
+      return toDecisionResult(await postDecisionFetch(apiKey, decisionBody(model, o), timeoutMs), o, decoder);
     },
   };
 }

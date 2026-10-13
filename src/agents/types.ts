@@ -12,7 +12,7 @@ export type DecisionResult = {
   error?: string;
 };
 
-export type AgentInfo = { id: string; label: string; kind: "model" | "bot"; model?: string };
+export type AgentInfo = { id: string; label: string; kind: "model" | "bot"; model?: string; /** protocol label this agent decodes with (model agents) */ protocol?: string };
 
 export interface Agent {
   info: AgentInfo;
