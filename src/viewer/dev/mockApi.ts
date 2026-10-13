@@ -16,6 +16,8 @@
 //   &mockState=empty   no matches in the pool yet
 //   &mockDrop=1        drop the first live connection a third of the way in (tests reconnects)
 //   &mockSpeed=N       run the fake engine N× faster
+//   &mockQueueMs=N     how long each match waits in the queue (default 2000)
+//   &mockQueuePos=N    starting place in line (default 2)
 import { COMMUNITY_RUN_ID, DEFAULT_PUBLIC_CONDITION, PUBLIC_CONDITIONS, type ApiError, type CreateMatchRequest, type LiveMessage, type StatusResponse } from "../../api/contract.ts";
 import { MODELS } from "../../agents/models.ts";
 import { digestMatch, indexEntry, mergeDigests, toMatch, type MatchDigest } from "../../analysis/aggregate.ts";
@@ -36,7 +38,9 @@ const q = new URLSearchParams(location.search);
 const STATE = q.get("mockState") as "broke" | "busy" | "empty" | null;
 const DROP = q.get("mockDrop") === "1";
 const SPEED = Math.max(0.1, Number(q.get("mockSpeed") ?? 1) || 1);
-const QUEUE_MS = 2000 / SPEED;
+const QUEUE_MS_RAW = Number(q.get("mockQueueMs") ?? 2000);
+const QUEUE_MS = (Number.isFinite(QUEUE_MS_RAW) ? Math.max(0, QUEUE_MS_RAW) : 2000) / SPEED;
+const QUEUE_POS = Math.max(1, Number(q.get("mockQueuePos") ?? 2) || 2); // starting place in line
 const STORE = "decision-arena:mock:pool";
 
 type Stored = { added: { entry: MatchIndexEntry; source: string }[]; live: { id: string; source: string; createdAt: number; dropped?: boolean }[] };
@@ -258,7 +262,7 @@ class MockSocket implements SocketLike {
       const el = Date.now() - live.createdAt;
       if (el < QUEUE_MS) {
         // Like the real lobby: count down, then position 0 while the models warm up.
-        const pos = el < QUEUE_MS * 0.4 ? 2 : el < QUEUE_MS * 0.75 ? 1 : 0;
+        const pos = el >= QUEUE_MS * 0.85 ? 0 : Math.max(1, QUEUE_POS - Math.floor((el / (QUEUE_MS * 0.85)) * QUEUE_POS));
         if (pos !== lastQueue) { lastQueue = pos; this.send({ type: "queued", position: pos }); }
       } else {
         tl ??= await timeline(b, id);
