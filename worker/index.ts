@@ -130,6 +130,12 @@ export default {
         return fail(500, "internal", "Something went wrong on our side.");
       }
     }
-    return env.ASSETS.fetch(req);
+    if (env.NOINDEX !== "1") return env.ASSETS.fetch(req);
+    // Staging (NOINDEX=1, Worker runs first for every path): keep it out of search engines.
+    if (url.pathname === "/robots.txt") return new Response("User-agent: *\nDisallow: /\n", { headers: { "Content-Type": "text/plain; charset=utf-8", "X-Robots-Tag": "noindex, nofollow" } });
+    const res = await env.ASSETS.fetch(req);
+    const out = new Response(res.body, res);
+    out.headers.set("X-Robots-Tag", "noindex, nofollow");
+    return out;
   },
 } satisfies ExportedHandler<Env>;

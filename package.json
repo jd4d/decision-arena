@@ -14,10 +14,12 @@
     "preview": "KEEP_DEV_VARS=1 vite build && vite preview",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "db:migrate:staging": "wrangler d1 migrations apply decision-arena-staging --remote -c wrangler.jsonc --env staging",
     "dev:vars": "node scripts/dev-vars.ts",
     "live:smoke": "node scripts/live-smoke.ts",
     "deploy:check": "node scripts/deploy-check.ts",
-    "cf:deploy": "pnpm build && pnpm deploy:check && wrangler deploy"
+    "cf:deploy": "pnpm build && pnpm deploy:check && wrangler deploy",
+    "cf:deploy:staging": "rm -rf dist && CLOUDFLARE_ENV=staging vite build && pnpm deploy:check && wrangler deploy"
   },
   "engines": {
     "node": ">=24"
